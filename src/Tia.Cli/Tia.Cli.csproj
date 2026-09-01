@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- Siemens.Engineering references System.Runtime.Remoting, which only .NET Framework has. -->
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>tia</AssemblyName>
+    <RootNamespace>TiaCli</RootNamespace>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Tia.Cli.Tests" />
+  </ItemGroup>
+
+  <!--
+    Compile-time reference only: <Private>false</Private> keeps the DLL out of the output. At runtime
+    OpennessResolver finds it through the registry, which is what lets one build drive whichever TIA
+    version is installed rather than only the one it was compiled against.
+  -->
+  <PropertyGroup>
+    <OpennessAssemblyPath Condition="'$(OpennessAssemblyPath)' == ''">C:\Program Files\Siemens\Automation\Portal V20\PublicAPI\V20\Siemens.Engineering.dll</OpennessAssemblyPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="Siemens.Engineering">
+      <HintPath>$(OpennessAssemblyPath)</HintPath>
+      <Private>false</Private>
+      <SpecificVersion>false</SpecificVersion>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="VerifyOpennessReference" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(OpennessAssemblyPath)')"
+           Text="Siemens.Engineering.dll not found at '$(OpennessAssemblyPath)'. Pass -p:OpennessAssemblyPath=... pointing at the PublicAPI assembly of an installed TIA Portal." />
+  </Target>
+
+</Project>
