@@ -1,8 +1,28 @@
+using System;
+using System.Reflection;
+
 namespace TiaCli.Cli
 {
     internal static class Help
     {
-        public const string Version = "1.0.0";
+        /// <summary>
+        /// Read off the assembly rather than written here, so <c>Version</c> in Directory.Build.props
+        /// stays the single source and a release cannot ship announcing the wrong number.
+        /// </summary>
+        public static readonly string Version = ReadVersion();
+
+        private static string ReadVersion()
+        {
+            var informational = typeof(Help).Assembly
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+
+            if (string.IsNullOrEmpty(informational))
+                return typeof(Help).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+
+            // SDK builds append "+<commit sha>" once the tree is a git repository.
+            var plus = informational.IndexOf('+');
+            return plus >= 0 ? informational.Substring(0, plus) : informational;
+        }
 
         public static void Print(Output output)
         {

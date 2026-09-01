@@ -74,16 +74,46 @@ status` says which it is holding, in those words, before you stop it.
 `Siemens.Engineering.dll` references `System.Runtime.Remoting`, which exists only in .NET Framework —
 so the tool targets net48 even though it is built with the .NET 8 SDK.
 
+## Install
+
+Unpack `tia-cli-<version>-win-x64.zip` and run, from the folder it made:
+
+```bash
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+It checks the machine over first — .NET Framework 4.8, an Openness installation, your membership of
+the **Siemens TIA Openness** group — and says which of them is missing rather than leaving you to
+find out one failed command at a time. Then it copies the tool to `%LOCALAPPDATA%\Programs\tia-cli`
+and puts that on your user PATH. Nothing needs administrator rights and nothing outside your profile
+is written. Open a new terminal afterwards, since the one you ran it from still has the old PATH.
+
+`-InstallDir <path>` puts it somewhere else, `-NoPath` leaves your PATH alone. Installing over an
+existing copy stops its session first — a background session owns a TIA Portal, and replacing the
+exe underneath it would strand that portal with nothing left to close it.
+
+To remove it:
+
+```bash
+powershell -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\Programs\tia-cli\uninstall.ps1"
+```
+
+Which stops the session, takes the folder off your PATH, and deletes both the tool and its state
+file and log. `-KeepData` keeps the latter two. The Openness whitelist entry under HKLM is left
+alone, being harmless once the exe it names is gone; an elevated `-RemoveWhitelist` run clears it.
+
 ## Build
 
 ```bash
 powershell -File tools/build.ps1
 ```
 
-That publishes `dist\tia.exe`. Add `-AddToPath` to put the folder on your user PATH, or
-`-OpennessAssemblyPath <path>` if TIA Portal is not at the default location — only the compile-time
-reference is affected, since at runtime the assembly is found through the registry and one build
-drives whichever version is installed.
+That publishes `dist\tia.exe` to run in place while you are changing it — the inner loop, not a way
+to install. It leaves PATH alone; `install.ps1` owns that, and two scripts adding two different
+folders is how you end up with a `tia` answering from somewhere unexpected that outlives an
+uninstall. Pass `-OpennessAssemblyPath <path>` if TIA Portal is not at the default location — only
+the compile-time reference is affected, since at runtime the assembly is found through the registry
+and one build drives whichever version is installed.
 
 Unit tests cover the parts that run without Openness — argument parsing, the wire protocol, error
 translation and exit codes, the daemon state file:
@@ -91,6 +121,17 @@ translation and exit codes, the daemon state file:
 ```bash
 dotnet test src/Tia.Cli.Tests/Tia.Cli.Tests.csproj
 ```
+
+To build the release zip — tests, a fresh publish, the install scripts and a `.sha256`, into
+`dist\`:
+
+```bash
+powershell -File tools/package.ps1
+```
+
+It always publishes fresh rather than packaging whatever is sitting in `dist\`, and refuses to
+package at all if the tests fail. The version comes from `Version` in `Directory.Build.props`, which
+is the one place it is written; `tia --version` reads it back off the assembly.
 
 ## The first run pauses for a dialog
 
