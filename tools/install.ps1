@@ -138,6 +138,45 @@ foreach ($file in $payload) {
 }
 Write-Step "Copied $($payload.Count) files"
 
+# A zip downloaded with a browser carries the internet zone in an alternate data stream, and every
+# file unpacked from it inherits the mark. On an unsigned exe that makes ShellExecute fail with
+# ERROR_CANCELLED - which is how the daemon comes to report "the operation was canceled by the user"
+# about something nobody was asked. Clearing the stream does not change the file's bytes, so the
+# Openness whitelist hash is unaffected.
+$blocked = Get-ChildItem -Path $InstallDir -File |
+    Where-Object { Get-Item $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue }
+
+if ($blocked) {
+    $blocked | Unblock-File
+    Write-Step "Unblocked $(@($blocked).Count) files marked as downloaded from the internet"
+}
+
+# A RUNASADMIN layer on tia.exe turns the daemon's hidden ShellExecute into a UAC prompt with
+# nowhere to appear, which Windows answers for you - the same ERROR_CANCELLED, from a different
+# cause. HKCU is ours to fix; HKLM needs an administrator and is only reported.
+$layers = 'HKCU:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers'
+if (Test-Path $layers) {
+    $props = Get-ItemProperty -Path $layers
+    foreach ($name in $props.PSObject.Properties.Name) {
+        if ($name -notlike '*\tia.exe') { continue }
+        if ($props.$name -notmatch 'RUNASADMIN') { continue }
+        Remove-ItemProperty -Path $layers -Name $name -ErrorAction SilentlyContinue
+        Write-Step 'Cleared a forced-elevation flag on tia.exe'
+    }
+}
+
+$machineLayers = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers'
+if (Test-Path $machineLayers) {
+    $machineProps = Get-ItemProperty -Path $machineLayers
+    foreach ($name in $machineProps.PSObject.Properties.Name) {
+        if ($name -notlike '*\tia.exe') { continue }
+        if ($machineProps.$name -notmatch 'RUNASADMIN') { continue }
+        Write-Warn 'tia.exe is set to always run as administrator, machine-wide. The daemon cannot'
+        Write-Warn 'start that way. Clear it from an elevated prompt:'
+        Write-Warn "  Remove-ItemProperty -Path '$machineLayers' -Name '$name'"
+    }
+}
+
 $exe = Join-Path $InstallDir 'tia.exe'
 if (-not (Test-Path $exe)) { throw "Install failed: $exe does not exist." }
 
@@ -169,9 +208,42 @@ if (-not $NoPath) {
     Write-Host "  Run: $exe help"
 }
 Write-Host ''
-Write-Host '  The first Openness command shows a TIA Portal "Openness access" window and waits until'
-Write-Host '  you answer it. Approve it once; the approval covers this installed copy and is remembered'
-Write-Host '  until tia.exe is replaced by a new version.'
+
+# Is this exact file already approved? Mirrors OpennessWhitelist.IsApproved: an entry matches only
+# when its Path equals ours and its FileHash is the base64 SHA-256 of these bytes.
+$approved = $false
+try {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($exe)
+    try { $hash = [Convert]::ToBase64String($sha.ComputeHash($stream)) }
+    finally { $stream.Dispose(); $sha.Dispose() }
+
+    foreach ($v in (Get-ChildItem 'HKLM:\SOFTWARE\Siemens\Automation\Openness' -ErrorAction SilentlyContinue)) {
+        foreach ($entry in (Get-ChildItem (Join-Path $v.PSPath 'Whitelist\tia.exe') -ErrorAction SilentlyContinue)) {
+            $props = Get-ItemProperty $entry.PSPath -ErrorAction SilentlyContinue
+            if ($props.Path -ieq $exe -and $props.FileHash -ceq $hash) { $approved = $true }
+        }
+    }
+} catch { }
+
+if ($approved) {
+    Write-Host '  TIA Portal has already approved this exact file for Openness access.'
+} else {
+    Write-Host '  Before anything else, run one command in the foreground, against a TIA Portal you'
+    Write-Host '  have open on screen:'
+    Write-Host ''
+    Write-Host '    tia devices --no-daemon'
+    Write-Host ''
+    Write-Host '  TIA Portal answers that with an "Openness access" window and waits until you say yes.'
+    Write-Host '  Approve it once and it is remembered until tia.exe is replaced by a new version.'
+    Write-Host ''
+    Write-Host '  Do this before "tia session start". A session runs its portal in the background, so'
+    Write-Host '  that window has nowhere to appear and the call times out as an access error instead.'
+}
+Write-Host ''
+Write-Host '  If the daemon will not start, or that window never appears, run repair.ps1 from an'
+Write-Host '  elevated prompt - it re-checks all of the above and writes the approval entry itself:'
+Write-Host "    powershell -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'repair.ps1')`""
 Write-Host ''
 Write-Host "  To remove: powershell -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'uninstall.ps1')`""
 Write-Host ''

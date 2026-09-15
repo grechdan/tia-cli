@@ -84,13 +84,13 @@ SOFTWARE
 PLC (online)
   download <device>        Download to the PLC     [--address <ip>] [--via <mode>, default PN/IE]
                                                    [--interface <name>] [--slot <n>] [--hardware]
-                                                   [--changes] [--stopped] [--force]
+                                                   [--changes] [--stopped] [--force] [--target <name>]
                            Routine prompts are answered like the dialog's defaults; destructive
                            ones (reset, reinitialize, up/downgrade) abort unless --force.
                            Password-protected targets are refused - use the TIA Portal UI.
   upload <ip>              Upload the station at <ip> into the project as a new station
                                                    [--via <mode>] [--interface <name>] [--slot <n>]
-  sim start <device>       Download to S7-PLCSIM, starting the simulator on the way
+  sim start <device>       Download to S7-PLCSIM; from V18 start the instance first
                                                    [--address <ip>] [--advanced] [--stopped]
                            Needs S7-PLCSIM installed; PLCSIM Advanced instances take --advanced.
 

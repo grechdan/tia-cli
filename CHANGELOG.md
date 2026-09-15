@@ -41,12 +41,25 @@ Openness installation, your membership of the Siemens TIA Openness group — the
 outside your profile. `uninstall.ps1` stops the session before removing anything, so a background
 session cannot be orphaned holding a TIA Portal open.
 
+It also clears the two things that stop a downloaded copy from running on a fresh machine, both of
+which surface as the daemon refusing to start with "the operation was canceled by the user": the
+mark of the web inherited from the downloaded zip, and a `RUNASADMIN` compatibility flag on
+`tia.exe`. Where the first Openness approval has not been granted yet, it says how to answer that
+dialog — in the foreground, against a portal on screen — rather than leaving a background session to
+time out against a window nobody can see.
+
+**repair.ps1.** Diagnoses a machine where `tia` still will not run: environment, mark of the web,
+compatibility flags, Openness group membership and token, and the whitelist entry, which it can
+write directly from an elevated prompt. `-DryRun` reports without changing anything.
+
 **Build tooling.** `tools/package.ps1` builds the release zip: it runs the tests, publishes fresh
 rather than shipping whatever is in `dist\`, and writes a SHA-256 alongside. `tools/build.ps1` is the
 development inner loop only and does not touch PATH.
 
 **Tests.** 58 unit tests over the parts that run without Openness — argument parsing, the wire
-protocol, error translation and the documented exit-code table, and the daemon state file.
+protocol, error translation and the documented exit-code table, and the daemon state file. For the
+rest, `tools/fieldtest.ps1` runs the hardware-dependent commands on a machine that has the hardware
+and writes a report to bring back.
 
 ### Verified
 

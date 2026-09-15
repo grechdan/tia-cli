@@ -167,7 +167,14 @@ namespace TiaCli.Daemon
                 }
                 catch (Exception ex)
                 {
-                    DaemonPaths.Log($"request failed: {ex.GetType().Name}: {ex.Message}");
+                    // Expected refusals stay one line. Anything else gets its whole chain: Openness
+                    // hides the real reason several inner exceptions down, and a log that keeps only
+                    // the outermost message cannot explain a crash afterwards. SessionException is
+                    // matched by name, as in ErrorTranslator, to keep Openness types out of this file.
+                    var expected = ex is WireException || ex.GetType().Name == "SessionException";
+                    DaemonPaths.Log(expected
+                        ? $"request failed: {ex.GetType().Name}: {ex.Message}"
+                        : "request failed: " + ex);
                     response = new WireResponse { Id = id, Ok = false, Error = ErrorTranslator.Describe(ex) };
                 }
 

@@ -46,13 +46,28 @@ namespace TiaCli.Openness
 
         // ---------------------------------------------------------------- session
 
+        // Handles GetProcesses() returns for the portal this session is connected to. Disposing one
+        // disposes the connection - observed: a single 'tia portals' during a session made every later
+        // call fail on a disposed Project - and dropping one hands the same job to its finaliser. So,
+        // like _currentProcess, they are kept for the life of the connection.
+        private readonly List<TiaPortalProcess> _ownPortalHandles = new List<TiaPortalProcess>();
+
         public List<PortalProcessDto> ListPortals()
         {
+            int? ownId = null;
+            if (_portal != null)
+            {
+                try { ownId = CurrentProcess().Id; }
+                catch (SessionException) { /* a portal that is already gone has nothing to protect */ }
+            }
+
             return TiaPortal.GetProcesses()
                 .Select(p =>
                 {
+                    var own = false;
                     try
                     {
+                        own = ownId.HasValue && p.Id == ownId.Value;
                         return new PortalProcessDto
                         {
                             ProcessId = p.Id,
@@ -62,7 +77,11 @@ namespace TiaCli.Openness
                             AcquisitionTime = Iso(p.AcquisitionTime),
                         };
                     }
-                    finally { p.Dispose(); }
+                    finally
+                    {
+                        if (own) _ownPortalHandles.Add(p);
+                        else p.Dispose();
+                    }
                 })
                 .ToList();
         }
@@ -186,9 +205,10 @@ namespace TiaCli.Openness
                 _portal = null;
             }
             // Released only after the portal has gone, and only by dropping the reference: disposing
-            // either handle disposes the portal, which is the whole reason they are held.
+            // any of these handles disposes the portal, which is the whole reason they are held.
             _currentProcess = null;
             _attachHandle = null;
+            _ownPortalHandles.Clear();
             _origin = null;
             _ownsPortal = false;
         }
@@ -513,6 +533,8 @@ namespace TiaCli.Openness
             public string PcInterface;
             public int InterfaceNumber = 1;
             public string Address;
+            /// <summary>The device interface to download to, as TIA names it (e.g. "1 X1").</summary>
+            public string TargetInterface;
             public bool IncludeHardware;
             public bool OnlyChanges;
             /// <summary>Allow the prompts that change or erase things beyond the download itself.</summary>
@@ -537,22 +559,87 @@ namespace TiaCli.Openness
                 throw new SessionException(WireErrorCodes.OpennessError,
                     $"'{deviceName}' has no download service - it cannot be a download target.");
 
-            var target = ResolveTarget(provider.Configuration, plan, DeviceAddressFallback(deviceName));
+            var target = ResolveTarget(provider.Configuration, plan, DeviceAddressFallback(deviceName), forDownload: true);
 
             var options = plan.OnlyChanges ? DownloadOptions.SoftwareOnlyChanges : DownloadOptions.Software;
             if (plan.IncludeHardware) options |= DownloadOptions.Hardware;
 
             var decisions = new List<string>();
-            DownloadConfigurationDelegate answer = c => AnswerDownloadPrompt(c, plan, decisions);
+            var refusals = new List<SessionException>();
+            // Nothing may escape this delegate: TIA runs it inside Download, and an exception there -
+            // even one raised by an assignment TIA itself rejects - takes the portal down unexplained.
+            // Every prompt is logged, so a crash leaves a trail of how far the download got.
+            DownloadConfigurationDelegate answer = c =>
+            {
+                var name = c?.GetType().Name ?? "(null)";
+                try
+                {
+                    AnswerDownloadPrompt(c, plan, decisions, refusals);
+                    TiaCli.Daemon.DaemonPaths.Log($"download prompt: {name} -> answered");
+                }
+                catch (Exception ex)
+                {
+                    TiaCli.Daemon.DaemonPaths.Log($"download prompt: {name} -> could not answer: {ex}");
+                    refusals.Add(new SessionException(WireErrorCodes.OpennessError,
+                        $"Answering the download prompt {name} failed: {ex.Message}",
+                        "Report the prompt name and this message."));
+                }
+            };
 
-            var result = provider.Download(target.Address, answer, answer, options);
+            // A prompt this tool will not answer is declined inside the callback and reported once TIA
+            // hands control back. Throwing from inside the callback instead is fatal to TIA: it comes
+            // back as a NonRecoverableException, the portal is gone, and the prompt's name with it.
+            try
+            {
+                TiaCli.Daemon.DaemonPaths.Log($"download start: {deviceName} via {target.Mode} / " +
+                    $"{target.PcInterface} to {target.Display}, options {options}");
+                var result = provider.Download(target.Configuration, answer, answer, options);
+                TiaCli.Daemon.DaemonPaths.Log($"download returned: {result.State}, " +
+                    $"{result.ErrorCount} error(s), {result.WarningCount} warning(s)");
+                if (refusals.Count > 0) throw refusals[0];
 
-            var dto = DescribeTransfer("download", deviceName, plan, target, decisions);
-            dto.State = result.State.ToString();
-            dto.ErrorCount = result.ErrorCount;
-            dto.WarningCount = result.WarningCount;
-            FlattenTransferMessages(result.Messages, 0, dto.Messages);
-            return dto;
+                var dto = DescribeTransfer("download", deviceName, plan, target, decisions);
+                dto.State = result.State.ToString();
+                dto.ErrorCount = result.ErrorCount;
+                dto.WarningCount = result.WarningCount;
+                FlattenTransferMessages(result.Messages, 0, dto.Messages);
+                return dto;
+            }
+            catch (Exception ex) when (refusals.Count > 0 && !(ex is SessionException))
+            {
+                throw refusals[0];
+            }
+            catch (EngineeringTargetInvocationException ex) when (refusals.Count == 0)
+            {
+                // TIA reports a refused download with one line ("Connect to module failed", "error
+                // during download"), while the reason - usually the configuration - only appears in its
+                // compile output. The portal survives this exception, so compile and attach the errors.
+                string reasons = null;
+                try
+                {
+                    var check = Compile(deviceName);
+                    var found = check.Messages
+                        .Where(m => string.Equals(m.State, "Error", StringComparison.OrdinalIgnoreCase) &&
+                                    !string.IsNullOrWhiteSpace(m.Description) &&
+                                    !m.Description.TrimStart().StartsWith("Compiling finished", StringComparison.OrdinalIgnoreCase))
+                        .Select(m => "  - " + m.Description.Trim())
+                        .Distinct()
+                        .Take(10)
+                        .ToList();
+                    if (found.Count > 0)
+                        reasons = $"The project does not compile ({check.ErrorCount} error(s)):" +
+                                  Environment.NewLine + string.Join(Environment.NewLine, found);
+                }
+                catch (Exception compileFailure)
+                {
+                    TiaCli.Daemon.DaemonPaths.Log("compile after failed download also failed: " + compileFailure.Message);
+                }
+
+                throw new SessionException(WireErrorCodes.OpennessError, ex.Message,
+                    reasons != null
+                        ? reasons + Environment.NewLine + "Fix these, then run 'tia compile " + deviceName + "' and download again."
+                        : "The project compiles, so check that the target is reachable: is the PLC (or the PLCSIM instance) running at that address, on a subnet of its own?");
+            }
         }
 
         /// <summary>
@@ -573,44 +660,112 @@ namespace TiaCli.Openness
                 throw new SessionException(WireErrorCodes.InvalidRequest,
                     "Uploading needs the PLC's address.", "Give it as 'tia upload <ip>'.");
 
-            var target = ResolveTarget(provider.Configuration, plan, null);
+            var target = ResolveTarget(provider.Configuration, plan, null, forDownload: false);
 
             var decisions = new List<string>();
-            var result = provider.StationUpload(target.Address,
-                c => AnswerUploadPrompt(c, decisions));
+            var refusals = new List<SessionException>();
 
-            var dto = DescribeTransfer("upload", null, plan, target, decisions);
-            dto.State = result.State.ToString();
-            dto.ErrorCount = result.ErrorCount;
-            dto.WarningCount = result.WarningCount;
-            FlattenTransferMessages(result.Messages, 0, dto.Messages);
-            try { dto.UploadedStation = result.UploadedStation?.Name; } catch { }
-            return dto;
+            // Same rule as Download: never throw from inside TIA's callback.
+            try
+            {
+                var result = provider.StationUpload(target.Address, c =>
+                {
+                    var name = c?.GetType().Name ?? "(null)";
+                    try
+                    {
+                        AnswerUploadPrompt(c, decisions, refusals);
+                        TiaCli.Daemon.DaemonPaths.Log($"upload prompt: {name} -> answered");
+                    }
+                    catch (Exception ex)
+                    {
+                        TiaCli.Daemon.DaemonPaths.Log($"upload prompt: {name} -> could not answer: {ex}");
+                        refusals.Add(new SessionException(WireErrorCodes.OpennessError,
+                            $"Answering the upload prompt {name} failed: {ex.Message}",
+                            "Report the prompt name and this message."));
+                    }
+                });
+                if (refusals.Count > 0) throw refusals[0];
+
+                var dto = DescribeTransfer("upload", null, plan, target, decisions);
+                dto.State = result.State.ToString();
+                dto.ErrorCount = result.ErrorCount;
+                dto.WarningCount = result.WarningCount;
+                FlattenTransferMessages(result.Messages, 0, dto.Messages);
+                try { dto.UploadedStation = result.UploadedStation?.Name; } catch { }
+                return dto;
+            }
+            catch (Exception ex) when (refusals.Count > 0 && !(ex is SessionException))
+            {
+                throw refusals[0];
+            }
         }
 
         /// <summary>
         /// Starts a simulation of the device. There is no start-simulation call in Openness; what
-        /// exists is downloading to the PLCSIM connection mode, which boots the simulator on the way.
-        /// The mode only appears when S7-PLCSIM is installed, so its absence is the honest error.
+        /// exists is downloading to a simulator.
+        ///
+        /// Up to V17 that meant the PLCSIM connection mode, which also boots the simulator. From V18
+        /// the mode is gone: a simulated PLC is an ordinary PN/IE target behind the Siemens PLCSIM
+        /// Virtual Ethernet Adapter, reached at its own IP address - and the instance has to be running
+        /// already, because TIA will not start one for a download.
         /// </summary>
         public TransferResultDto StartSimulation(string deviceName, TransferPlan plan)
         {
-            plan.Mode = "PLCSIM";
-            plan.PcInterface = plan.PcInterface ?? "PLCSIM";
             // A simulated CPU has no retained state worth protecting, and the first download to a
             // fresh simulator always raises the prompts a real first download would.
             plan.Force = true;
 
-            var dto = Download(deviceName, plan);
-            dto.Operation = "simulation";
-            return dto;
+            var modes = RequireCpuItem(deviceName).GetService<DownloadProvider>()?.Configuration.Modes;
+            if (modes != null && modes.Find("PLCSIM") != null)
+            {
+                plan.Mode = "PLCSIM";
+                plan.PcInterface = plan.PcInterface ?? "PLCSIM";
+            }
+            else if (modes != null)
+            {
+                var adapter = modes
+                    .SelectMany(m => m.PcInterfaces.Select(i => new { Mode = m, Interface = i }))
+                    .FirstOrDefault(x => x.Interface.Name.IndexOf("PLCSIM", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                if (adapter == null)
+                {
+                    var known = string.Join(", ", modes.SelectMany(m => m.PcInterfaces.Select(i => m.Name + " / " + i.Name)));
+                    throw new SessionException(WireErrorCodes.NotFound,
+                        $"No PLCSIM connection mode and no PLCSIM adapter on this machine. Available: {known}.",
+                        "Install S7-PLCSIM for this TIA Portal version.");
+                }
+
+                plan.Mode = adapter.Mode.Name;
+                plan.PcInterface = plan.PcInterface ?? adapter.Interface.Name;
+            }
+
+            try
+            {
+                var dto = Download(deviceName, plan);
+                dto.Operation = "simulation";
+                return dto;
+            }
+            catch (SessionException ex) when (ex.Message.IndexOf("Connect to module", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                                              (ex.Hint ?? "").StartsWith("The project compiles", StringComparison.Ordinal))
+            {
+                // Confirmed on V20: the same download fails with "Connect to module" while the simulation
+                // is off, and succeeds once it has been started - TIA will not start it for a download.
+                throw new SessionException(ex.Code, ex.Message,
+                    "The project compiles, so the simulation is most likely not running. Start it first: " +
+                    "open S7-PLCSIM, power on an instance of the same CPU family at the device's IP address " +
+                    "(or use 'Start simulation' in TIA Portal), then run 'tia sim start' again.");
+            }
         }
 
         private sealed class ResolvedTarget
         {
             public string Mode;
             public string PcInterface;
+            /// <summary>What the transfer is aimed at: a target interface for downloads, an address otherwise.</summary>
+            public IConfiguration Configuration;
+            /// <summary>Set on the address route only; station upload takes an address.</summary>
             public ConfigurationAddress Address;
+            public string Display;
         }
 
         /// <summary>
@@ -618,7 +773,7 @@ namespace TiaCli.Openness
         /// the names are installation-specific and this is the only way to discover them from a CLI.
         /// </summary>
         private static ResolvedTarget ResolveTarget(ConnectionConfiguration configuration,
-            TransferPlan plan, string fallbackAddress)
+            TransferPlan plan, string fallbackAddress, bool forDownload)
         {
             var mode = configuration.Modes.Find(plan.Mode);
             if (mode == null)
@@ -657,24 +812,70 @@ namespace TiaCli.Openness
             }
 
             var address = plan.Address ?? fallbackAddress;
+
+            // A download is aimed at a target interface - the device's port as TIA names it, such as
+            // "1 X1" - which is the route Siemens documents. An address made directly on the PC adapter
+            // belongs to no target interface, and handing that to Download was seen to take TIA
+            // down before it asked a single question. The address route stays for station upload, and
+            // for an adapter that offers no target interfaces at all.
+            if (forDownload && pcInterface.TargetInterfaces.Count > 0)
+            {
+                var names = string.Join(", ", pcInterface.TargetInterfaces.Select(t => t.Name));
+                TiaCli.Daemon.DaemonPaths.Log($"target interfaces on {pcInterface.Name}: {names}");
+
+                ConfigurationTargetInterface targetInterface;
+                if (!string.IsNullOrEmpty(plan.TargetInterface))
+                {
+                    targetInterface = pcInterface.TargetInterfaces.Find(plan.TargetInterface);
+                    if (targetInterface == null)
+                        throw new SessionException(WireErrorCodes.NotFound,
+                            $"Target interface '{plan.TargetInterface}' not found on '{pcInterface.Name}'. Available: {names}.",
+                            "Pick one with --target <name>.");
+                }
+                else if (pcInterface.TargetInterfaces.Count == 1)
+                {
+                    targetInterface = pcInterface.TargetInterfaces[0];
+                }
+                else
+                {
+                    throw new SessionException(WireErrorCodes.Ambiguous,
+                        $"'{pcInterface.Name}' has several target interfaces: {names}.",
+                        "Pick one with --target <name>.");
+                }
+
+                return new ResolvedTarget
+                {
+                    Mode = mode.Name,
+                    PcInterface = pcInterface.Name,
+                    Configuration = targetInterface,
+                    Display = string.IsNullOrEmpty(address) ? targetInterface.Name : $"{targetInterface.Name} ({address})",
+                };
+            }
+
             if (string.IsNullOrEmpty(address))
             {
                 if (pcInterface.Addresses.Count == 0)
                     throw new SessionException(WireErrorCodes.InvalidRequest,
                         "No target address. Give one with --address <ip>.");
+                var first = pcInterface.Addresses[0];
                 return new ResolvedTarget
                 {
                     Mode = mode.Name,
                     PcInterface = pcInterface.Name,
-                    Address = pcInterface.Addresses[0],
+                    Configuration = first,
+                    Address = first,
+                    Display = first.Address,
                 };
             }
 
+            var found = pcInterface.Addresses.Find(address) ?? pcInterface.Addresses.Create(address);
             return new ResolvedTarget
             {
                 Mode = mode.Name,
                 PcInterface = pcInterface.Name,
-                Address = pcInterface.Addresses.Find(address) ?? pcInterface.Addresses.Create(address),
+                Configuration = found,
+                Address = found,
+                Display = found.Address,
             };
         }
 
@@ -699,7 +900,7 @@ namespace TiaCli.Openness
         /// outright: a CLI has no business holding PLC passwords in argv.
         /// </summary>
         private static void AnswerDownloadPrompt(DownloadConfiguration prompt, TransferPlan plan,
-            List<string> decisions)
+            List<string> decisions, List<SessionException> refusals)
         {
             switch (prompt)
             {
@@ -759,37 +960,51 @@ namespace TiaCli.Openness
                     users.CurrentSelection = UserManagementPreDownloadSelections.KeepOnlineUserManagementData;
                     decisions.Add("user management: keep what is on the PLC"); return;
 
-                // -------- destructive or surprising: only under --force
+                // -------- destructive or surprising: only under --force. Otherwise declined - with the
+                // prompt's harmless answer where it has one - and reported once the download returns.
                 case ResetModule reset:
-                    RequireForce(plan, decisions, "reset module (erases it)");
-                    reset.CurrentSelection = ResetModuleSelections.DeleteAll; return;
+                    reset.CurrentSelection = Allowed(plan, decisions, refusals, "reset module (erases it)")
+                        ? ResetModuleSelections.DeleteAll
+                        : ResetModuleSelections.NoAction;
+                    return;
                 case DataBlockReinitialization reinit:
-                    RequireForce(plan, decisions, "reinitialize data blocks (loses current values)");
-                    reinit.CurrentSelection = DataBlockReinitializationSelections.StopPlcAndReinitialize; return;
+                    reinit.CurrentSelection = Allowed(plan, decisions, refusals, "reinitialize data blocks (loses current values)")
+                        ? DataBlockReinitializationSelections.StopPlcAndReinitialize
+                        : DataBlockReinitializationSelections.NoAction;
+                    return;
                 case InitializeMemory memory:
-                    RequireForce(plan, decisions, "initialize memory");
-                    memory.CurrentSelection = InitializeMemorySelections.AcceptAll; return;
+                    memory.CurrentSelection = Allowed(plan, decisions, refusals, "initialize memory")
+                        ? InitializeMemorySelections.AcceptAll
+                        : InitializeMemorySelections.NoAction;
+                    return;
                 case OverwriteOnMemoryCard card:
-                    RequireForce(plan, decisions, "overwrite the memory card");
-                    card.CurrentSelection = OverwriteOnMemoryCardSelections.Load; return;
+                    card.CurrentSelection = Allowed(plan, decisions, refusals, "overwrite the memory card")
+                        ? OverwriteOnMemoryCardSelections.Load
+                        : OverwriteOnMemoryCardSelections.NoAction;
+                    return;
                 case ProtectionLevelChanged protection:
-                    RequireForce(plan, decisions, "continue although the protection level changed");
-                    protection.CurrentSelection = ProtectionLevelChangedSelections.ContinueDownloading; return;
+                    protection.CurrentSelection = Allowed(plan, decisions, refusals, "continue although the protection level changed")
+                        ? ProtectionLevelChangedSelections.ContinueDownloading
+                        : ProtectionLevelChangedSelections.NoChange;
+                    return;
                 case SelectiveDeleteDownload delete:
-                    RequireForce(plan, decisions, "delete data on the target");
-                    delete.CurrentSelection = SelectiveDeleteDataSelections.AcceptAll; return;
+                    // No harmless choice exists for this one; declining means leaving it unanswered.
+                    if (Allowed(plan, decisions, refusals, "delete data on the target"))
+                        delete.CurrentSelection = SelectiveDeleteDataSelections.AcceptAll;
+                    return;
                 case UpgradeTargetDevice upgrade:
-                    RequireForce(plan, decisions, "upgrade the target device");
-                    upgrade.Checked = true; return;
+                    upgrade.Checked = Allowed(plan, decisions, refusals, "upgrade the target device");
+                    return;
                 case DowngradeTargetDevice downgrade:
-                    RequireForce(plan, decisions, "downgrade the target device");
-                    downgrade.Checked = true; return;
+                    downgrade.Checked = Allowed(plan, decisions, refusals, "downgrade the target device");
+                    return;
 
                 // -------- credentials: never
                 case DownloadPasswordConfiguration _:
-                    throw new SessionException(WireErrorCodes.AccessDenied,
+                    refusals.Add(new SessionException(WireErrorCodes.AccessDenied,
                         "The target asks for a password, and this tool does not handle PLC passwords.",
-                        "Download once from the TIA Portal UI, or remove the protection for commissioning.");
+                        "Download once from the TIA Portal UI, or remove the protection for commissioning."));
+                    return;
             }
 
             // The catch-all comes last so the specific cases above win. It covers the plain
@@ -802,23 +1017,35 @@ namespace TiaCli.Openness
                 return;
             }
 
-            throw new SessionException(WireErrorCodes.OpennessError,
+            refusals.Add(new SessionException(WireErrorCodes.OpennessError,
                 $"The download asked something this tool does not know how to answer: " +
                 $"{prompt.GetType().Name}.",
-                "Do this download once from the TIA Portal UI, and report the prompt name.");
+                "Do this download once from the TIA Portal UI, and report the prompt name."));
         }
 
-        private static void RequireForce(TransferPlan plan, List<string> decisions, string what)
+        /// <summary>
+        /// True when the plan allows a destructive answer. Otherwise the refusal is recorded rather than
+        /// thrown - this runs inside TIA's callback, where an exception takes the portal down - and the
+        /// caller declines the prompt.
+        /// </summary>
+        private static bool Allowed(TransferPlan plan, List<string> decisions,
+            List<SessionException> refusals, string what)
         {
-            if (!plan.Force)
-                throw new SessionException(WireErrorCodes.InvalidRequest,
-                    $"The download wants to {what}, which needs an explicit go-ahead.",
-                    "Re-run with --force to allow it.");
-            decisions.Add("forced: " + what);
+            if (plan.Force)
+            {
+                decisions.Add("forced: " + what);
+                return true;
+            }
+
+            refusals.Add(new SessionException(WireErrorCodes.InvalidRequest,
+                $"The download wants to {what}, which needs an explicit go-ahead.",
+                "Re-run with --force to allow it."));
+            return false;
         }
 
         private static void AnswerUploadPrompt(
-            Siemens.Engineering.Upload.Configurations.UploadConfiguration prompt, List<string> decisions)
+            Siemens.Engineering.Upload.Configurations.UploadConfiguration prompt, List<string> decisions,
+            List<SessionException> refusals)
         {
             switch (prompt)
             {
@@ -827,15 +1054,16 @@ namespace TiaCli.Openness
                         .UploadMissingProductsSelections.TryUpload;
                     decisions.Add("modules without installed products: try anyway"); return;
                 case Siemens.Engineering.Upload.Configurations.UploadPasswordConfiguration _:
-                    throw new SessionException(WireErrorCodes.AccessDenied,
+                    refusals.Add(new SessionException(WireErrorCodes.AccessDenied,
                         "The PLC asks for a password, and this tool does not handle PLC passwords.",
-                        "Upload once from the TIA Portal UI instead.");
+                        "Upload once from the TIA Portal UI instead."));
+                    return;
             }
 
-            throw new SessionException(WireErrorCodes.OpennessError,
+            refusals.Add(new SessionException(WireErrorCodes.OpennessError,
                 $"The upload asked something this tool does not know how to answer: " +
                 $"{prompt.GetType().Name}.",
-                "Do this upload once from the TIA Portal UI, and report the prompt name.");
+                "Do this upload once from the TIA Portal UI, and report the prompt name."));
         }
 
         private static TransferResultDto DescribeTransfer(string operation, string device,
@@ -847,7 +1075,7 @@ namespace TiaCli.Openness
                 Device = device,
                 Mode = target.Mode,
                 PcInterface = target.PcInterface,
-                TargetAddress = target.Address.Address,
+                TargetAddress = target.Display,
                 Decisions = decisions,
                 Messages = new List<string>(),
             };
@@ -1129,24 +1357,46 @@ namespace TiaCli.Openness
 
         // ---------------------------------------------------------------- compile
 
+        /// <summary>
+        /// Compiles the device's hardware configuration, then its PLC software - what TIA's "Compile >
+        /// Hardware and software" does. Software alone reported success on projects whose hardware
+        /// could never be downloaded: protection and certificate settings, for one, are hardware
+        /// configuration, and a download refuses them while a software compile never looks.
+        /// </summary>
         public CompileResultDto Compile(string deviceName)
         {
-            var software = RequirePlcSoftware(deviceName);
-
-            var compilable = software.GetService<ICompilable>();
-            if (compilable == null)
-                throw new SessionException(WireErrorCodes.OpennessError,
-                    $"PLC software on '{deviceName}' does not support compilation.");
-
-            var result = compilable.Compile();
             var messages = new List<CompileMessageDto>();
-            FlattenMessages(result.Messages, messages);
+            var errors = 0;
+            var warnings = 0;
+
+            var device = FindDevice(RequireProject(), deviceName);
+            var hardware = ((IEngineeringServiceProvider)device).GetService<ICompilable>();
+            if (hardware != null)
+            {
+                var result = hardware.Compile();
+                FlattenMessages(result.Messages, messages);
+                errors += result.ErrorCount;
+                warnings += result.WarningCount;
+            }
+
+            var software = RequirePlcSoftware(deviceName).GetService<ICompilable>();
+            if (software == null && hardware == null)
+                throw new SessionException(WireErrorCodes.OpennessError,
+                    $"'{deviceName}' does not support compilation.");
+
+            if (software != null)
+            {
+                var result = software.Compile();
+                FlattenMessages(result.Messages, messages);
+                errors += result.ErrorCount;
+                warnings += result.WarningCount;
+            }
 
             return new CompileResultDto
             {
-                State = result.State.ToString(),
-                ErrorCount = result.ErrorCount,
-                WarningCount = result.WarningCount,
+                State = errors > 0 ? "Error" : warnings > 0 ? "Warning" : "Success",
+                ErrorCount = errors,
+                WarningCount = warnings,
                 Messages = messages,
             };
         }

@@ -198,6 +198,7 @@ namespace TiaCli.Openness
             plan.PcInterface = p.String("pcInterface");
             plan.InterfaceNumber = p.Int("slot", 1);
             plan.Address = p.String("address");
+            plan.TargetInterface = p.String("target");
             plan.IncludeHardware = p.Bool("hardware", false);
             plan.OnlyChanges = p.Bool("onlyChanges", false);
             plan.Force = p.Bool("force", false);

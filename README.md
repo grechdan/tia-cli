@@ -84,7 +84,10 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 
 It checks the machine over first — .NET Framework 4.8, an Openness installation, your membership of
 the **Siemens TIA Openness** group — and says which of them is missing rather than leaving you to
-find out one failed command at a time. Then it copies the tool to `%LOCALAPPDATA%\Programs\tia-cli`
+find out one failed command at a time. It also clears the two things that stop a downloaded copy
+from working at all: the mark of the web the zip carries, and any forced-elevation flag on
+`tia.exe`. Both make the daemon's launch fail as "the operation was canceled by the user" about
+something nobody was asked; see [Why the daemon might not start](#why-the-daemon-might-not-start). Then it copies the tool to `%LOCALAPPDATA%\Programs\tia-cli`
 and puts that on your user PATH. Nothing needs administrator rights and nothing outside your profile
 is written. Open a new terminal afterwards, since the one you ran it from still has the old PATH.
 
@@ -133,6 +136,11 @@ It always publishes fresh rather than packaging whatever is sitting in `dist\`, 
 package at all if the tests fail. The version comes from `Version` in `Directory.Build.props`, which
 is the one place it is written; `tia --version` reads it back off the assembly.
 
+The commands that need hardware — `download`, `upload`, `sim`, the `show` verbs — are verified on a
+machine that has it, with `tools/fieldtest.ps1`. That is maintainer tooling and does not ship in the
+release zip; [the field-test skill](.claude/skills/field-test/SKILL.md) covers running it and
+reading its report.
+
 ## The first run pauses for a dialog
 
 The first time a given `tia.exe` talks to Openness, **TIA Portal puts an "Openness access" window on
@@ -153,6 +161,43 @@ Two details worth knowing, both learned the hard way:
 - **Approval follows the bytes, not the name.** Killing a client does not withdraw its pending
   request, and answering it later records approval for *that* build — which tells you nothing about
   the one you are running now.
+
+### Answer it in the foreground, first
+
+Approve the dialog by running one command in the foreground, against a TIA Portal you have open on
+screen, before you start a session:
+
+```bash
+tia devices --no-daemon
+```
+
+A session runs its portal in the background, and a headless one has no user interface at all — so
+that window has nowhere to appear, nobody answers it, and the call eventually gives up as
+`access_denied` (exit 7) with the misleading text "Security error. The operation has timed out."
+`install.ps1` prints this instruction when the file it just installed is not yet approved.
+
+An administrator can pre-empt the dialog instead by writing the whitelist entry directly, which is
+what `repair.ps1` does. TIA Portal still has the final say.
+
+### Why the daemon might not start
+
+`tia session start` launches the daemon through `ShellExecute`, so that it detaches from the console
+and outlives the command. Two unrelated things make that fail with `ERROR_CANCELLED` — reported as
+**"the operation was canceled by the user"** when nobody was asked anything:
+
+- **The mark of the web.** A zip downloaded with a browser is tagged with the internet zone, and
+  every file unpacked from it inherits the tag. On an unsigned executable, SmartScreen refuses the
+  launch. `install.ps1` clears the tag from what it installs; `Unblock-File` does it by hand. The tag
+  is an alternate data stream, so removing it does not change the file's bytes — the Openness
+  approval survives.
+- **A forced-elevation flag.** A `RUNASADMIN` compatibility layer on `tia.exe` turns that hidden
+  launch into a UAC prompt with nowhere to appear, which Windows then declines for you.
+  `install.ps1` clears it for your own account and reports one set machine-wide, which needs an
+  administrator.
+
+If it still will not start, run `tia --serve` in a visible terminal and use `tia` from a second one:
+whatever the shell is refusing becomes visible instead of being swallowed. The daemon's own log is
+at `%LOCALAPPDATA%\tia-cli\daemon.log`.
 
 ## Commands
 
@@ -239,11 +284,16 @@ tia compile PLC_1 || echo "compile failed"
   abort with the prompt's name unless `--force` was given. Password prompts are always refused: a
   CLI has no business holding PLC passwords. An unrecognised prompt aborts by name so it can be
   added deliberately rather than answered by accident.
-- **There is no "start simulation" call in Openness.** What exists is downloading to the `PLCSIM`
-  connection mode, which boots the simulator on the way — that is what `tia sim start` does. The
-  mode itself only exists when S7-PLCSIM is installed, so its absence from the mode list is both the
-  detection and the error message. PLCSIM Advanced instances are a different target: same download,
-  but the software-target prompt is answered with `--advanced`.
+- **There is no "start simulation" call in Openness.** What exists is downloading to a simulator, and
+  `tia sim start` is that download. Up to V17 it goes to the `PLCSIM` connection mode, which also
+  boots the simulator. From V18 that mode is gone: a simulated PLC is an ordinary PN/IE target behind
+  the *Siemens PLCSIM Virtual Ethernet Adapter*, at its own IP address, so `sim start` uses that adapter
+  instead — and the PLCSIM instance must already be running at the device's IP, because TIA will not
+  start one for a download. PLCSIM Advanced instances take `--advanced` for the software-target prompt.
+- **Never throw from inside a download callback.** TIA treats an exception in its own callback as
+  fatal: it surfaces as a `NonRecoverableException`, the portal is gone, and whatever the exception
+  said is lost. Prompts `tia` will not answer are declined inside the callback and reported by name
+  once the download returns.
 - **A running session only knows the wire methods of the binary it was started from.** After a
   rebuild that adds commands, `tia session stop` and start again — otherwise the old daemon answers
   new verbs with "Unknown method".

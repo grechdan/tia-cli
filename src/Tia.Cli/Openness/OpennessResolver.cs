@@ -63,22 +63,45 @@ namespace TiaCli.Openness
                     "Install TIA Portal with the Openness option enabled.");
             }
 
-            var version = requestedVersion ?? versions[0];
-            if (!versions.Contains(version))
+            var pathsByVersion = new Dictionary<string, Dictionary<string, string>>();
+            var version = PickVersion(versions, requestedVersion, candidate =>
             {
-                throw new OpennessSetupException(
-                    $"Openness {version} is not installed. Available: {string.Join(", ", versions)}.");
-            }
+                var paths = ReadAssemblyPaths(candidate);
+                pathsByVersion[candidate] = paths;
+                return paths.ContainsKey("Siemens.Engineering");
+            });
 
-            _pathsByAssemblyName = ReadAssemblyPaths(version);
-            if (!_pathsByAssemblyName.ContainsKey("Siemens.Engineering"))
-            {
-                throw new OpennessSetupException(
-                    $"Openness {version} is registered but exposes no Siemens.Engineering assembly path.");
-            }
-
+            _pathsByAssemblyName = pathsByVersion[version];
             _resolvedVersion = version;
             AppDomain.CurrentDomain.AssemblyResolve += OnAssemblyResolve;
+        }
+
+        /// <summary>
+        /// Chooses the Openness version to load. One the caller named is taken or refused as it stands.
+        /// Without one, the newest version that actually exposes Siemens.Engineering wins: a machine
+        /// can register a version whose assemblies are missing - a partial install, or one without the
+        /// Openness option - and refusing to start over it would strand a perfectly good older version.
+        /// </summary>
+        internal static string PickVersion(IReadOnlyList<string> newestFirst, string requested,
+            Func<string, bool> exposesEngineering)
+        {
+            if (requested != null)
+            {
+                if (!newestFirst.Contains(requested))
+                    throw new OpennessSetupException(
+                        $"Openness {requested} is not installed. Available: {string.Join(", ", newestFirst)}.");
+                if (!exposesEngineering(requested))
+                    throw new OpennessSetupException(
+                        $"Openness {requested} is registered but exposes no Siemens.Engineering assembly path.");
+                return requested;
+            }
+
+            foreach (var candidate in newestFirst)
+                if (exposesEngineering(candidate)) return candidate;
+
+            throw new OpennessSetupException(
+                "No installed Openness version exposes a Siemens.Engineering assembly path " +
+                $"(registered: {string.Join(", ", newestFirst)}).");
         }
 
         private static RegistryKey OpenRoot()

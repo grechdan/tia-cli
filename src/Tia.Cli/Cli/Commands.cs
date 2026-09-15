@@ -73,6 +73,7 @@ namespace TiaCli.Cli
                     onlyChanges = cmd.Has("changes"),
                     force = cmd.Has("force"),
                     noStart = cmd.Has("stopped"),
+                    target = cmd.Value("target"),
                 });
                 case "upload": return Transfer(cmd, executor, output, "plc.upload", new
                 {
@@ -90,6 +91,7 @@ namespace TiaCli.Cli
                     hardware = cmd.Has("hardware"),
                     noStart = cmd.Has("stopped"),
                     advanced = cmd.Has("advanced"),
+                    target = cmd.Value("target"),
                 });
 
                 default:
@@ -568,9 +570,13 @@ namespace TiaCli.Cli
 
             output.Line($"{compile.State}: {compile.ErrorCount} error(s), {compile.WarningCount} warning(s)");
 
+            // TIA's messages are a tree: each group node repeats the worst state below it with no text of
+            // its own, and the last line restates the counts printed above. Only the leaves say anything.
             var interesting = (compile.Messages ?? new List<CompileMessageDto>())
                 .Where(m => !string.Equals(m.State, "Success", StringComparison.OrdinalIgnoreCase) &&
-                            !string.Equals(m.State, "Information", StringComparison.OrdinalIgnoreCase))
+                            !string.Equals(m.State, "Information", StringComparison.OrdinalIgnoreCase) &&
+                            !string.IsNullOrWhiteSpace(m.Description) &&
+                            !m.Description.TrimStart().StartsWith("Compiling finished", StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
             const int cap = 40;
