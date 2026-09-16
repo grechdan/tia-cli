@@ -60,6 +60,11 @@ namespace TiaCli.Cli
                     table = cmd.Positional(1, "table"),
                 });
 
+                case "device attrs": return DeviceAttributes(cmd, executor, output);
+                case "device set": return DeviceSetAttribute(cmd, executor, output);
+                case "device protection": return DeviceProtection(cmd, executor, output);
+                case "sim create": return SimCreate(cmd, executor, output);
+
                 case "compile": return Compile(cmd, executor, output);
 
                 case "download": return Transfer(cmd, executor, output, "plc.download", new
@@ -74,6 +79,8 @@ namespace TiaCli.Cli
                     force = cmd.Has("force"),
                     noStart = cmd.Has("stopped"),
                     target = cmd.Value("target"),
+                    secret = cmd.Value("secret"),
+                    plcPassword = cmd.Value("plc-password"),
                 });
                 case "upload": return Transfer(cmd, executor, output, "plc.upload", new
                 {
@@ -92,6 +99,8 @@ namespace TiaCli.Cli
                     noStart = cmd.Has("stopped"),
                     advanced = cmd.Has("advanced"),
                     target = cmd.Value("target"),
+                    secret = cmd.Value("secret"),
+                    plcPassword = cmd.Value("plc-password"),
                 });
 
                 default:
@@ -552,6 +561,95 @@ namespace TiaCli.Cli
 
             var tag = JsonUtil.To<TagDto>(result);
             output.Line($"{tag.Name}  {tag.DataType}  {tag.LogicalAddress}  (table {tag.TableName})");
+            return 0;
+        }
+
+        // ---------------------------------------------------------------- attributes
+
+        private static int DeviceAttributes(CommandLine cmd, IExecutor executor, Output output)
+        {
+            var result = Call(executor, "device.attributes", new { device = cmd.Positional(0, "device") });
+            if (output.AsJson) { output.Json(result); return 0; }
+
+            var all = JsonUtil.To<List<AttributeDto>>(result);
+            var filter = cmd.Value("filter");
+            var shown = string.IsNullOrEmpty(filter)
+                ? all
+                : all.Where(a => (a.Name ?? "").IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
+
+            output.Table(
+                new[] { "attribute", "type", "value" },
+                shown.Select(a => new[]
+                {
+                    a.Name,
+                    a.Type ?? "-",
+                    Output.Truncate(a.Value ?? "-", 60),
+                }).ToList());
+
+            if (shown.Count != all.Count)
+                output.Detail($"{shown.Count} of {all.Count} attributes. Drop --filter to see them all.");
+            return 0;
+        }
+
+        private static int DeviceSetAttribute(CommandLine cmd, IExecutor executor, Output output)
+        {
+            var result = Call(executor, "device.setAttribute", new
+            {
+                device = cmd.Positional(0, "device"),
+                name = cmd.Positional(1, "attribute"),
+                value = cmd.Positional(2, "value"),
+            });
+            if (output.AsJson) { output.Json(result); return 0; }
+
+            var attribute = JsonUtil.To<AttributeDto>(result);
+            output.Line($"{attribute.Name} = {attribute.Value}");
+            output.Detail("Changes are in memory until 'tia project save'.");
+            return 0;
+        }
+
+        private static int DeviceProtection(CommandLine cmd, IExecutor executor, Output output)
+        {
+            var result = Call(executor, "device.protection", new
+            {
+                device = cmd.Positional(0, "device"),
+                level = cmd.Value("level"),
+                password = cmd.Value("password"),
+                secret = cmd.Value("secret"),
+            });
+            if (output.AsJson) { output.Json(result); return 0; }
+
+            foreach (var change in JsonUtil.To<List<AttributeDto>>(result))
+                output.Line($"{change.Name}: {change.Value}");
+
+            output.Detail("Changes are in memory until 'tia project save'.");
+            return 0;
+        }
+
+        // ---------------------------------------------------------------- simulation
+
+        private static int SimCreate(CommandLine cmd, IExecutor executor, Output output)
+        {
+            var device = cmd.Positional(0, "device");
+            var result = Call(executor, "sim.create", new
+            {
+                device,
+                cpu = cmd.Value("cpu"),
+                address = cmd.Value("address"),
+                mask = cmd.Value("mask"),
+                timeout = cmd.Int("timeout", 60000),
+            });
+            if (output.AsJson) { output.Json(result); return 0; }
+
+            var simulation = JsonUtil.To<SimulationInstanceDto>(result);
+            output.Line($"Simulation '{simulation.Name}' is running.");
+            output.Pairs(new[]
+            {
+                Output.KV("cpu", simulation.CpuType),
+                Output.KV("address", simulation.Address),
+                Output.KV("state", simulation.OperatingState ?? "-"),
+            });
+
+            output.Detail($"Now put the program on it: tia download {device}");
             return 0;
         }
 

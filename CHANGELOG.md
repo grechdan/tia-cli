@@ -21,6 +21,22 @@ left alone.
 addresses, and save.
 
 - `project new|open|info|save|close`, `devices`, `catalog`, `device add`, `device ip`
+- `device attrs` lists a CPU's Openness attributes and `device set` changes one. Hardware settings
+  that have no command of their own are reachable that way, under names that differ between TIA versions.
+- `sim create` makes a PLCSIM instance for a device and powers it on, through PLCSIM's own Simulation
+  Runtime API - loaded by path and called by reflection, since it ships inside the PLCSIM
+  installation. Downloading is then the ordinary `tia download`. S7-1500 and upwards only; PLCSIM's
+  API has no S7-1200 type, so those instances are still made by hand. An instance created through the
+  API counts as **PLCSIM Advanced** and asks for that licence key - PLCSIM offers a trial - while one
+  created by hand in the PLCSIM window does not.
+- `download` and `sim start` take `--secret` for the master-secret prompt and `--plc-password` for
+  the access-level ones. A CPU that has a master secret - which current firmware needs before it
+  compiles - asks for it on every download, so without this a project built entirely from the CLI
+  could never be downloaded from it.
+- `device protection` sets the access level, the full-access password and the password for
+  confidential configuration data. A current CPU refuses to compile until the last two exist, so
+  without it every project built from scratch needs a trip through the TIA UI. Passwords given on a
+  command line end up in shell history: prefer a prepared project where that matters.
 
 **Program blocks and tags.** Import SCL, compile, list and export blocks, and manage tag tables.
 
@@ -67,6 +83,39 @@ Exercised against TIA Portal V20 on Windows 10 x64: a full cycle of create proje
 set its address, create tag tables and tags, import SCL, compile clean, list and export blocks, save,
 reopen from disk, and confirm everything survived. Install, reinstall over an existing copy, and
 uninstall were each run from the built zip.
+
+### Known limitations
+
+**`sim create` makes an instance TIA will not download to.** Verified on V20: the Runtime API creates
+an *Advanced* instance (PLCSIM shows it as `EXTERNAL - ADVANCED`), and a download to it fails with
+"Connect to module failed" even with TCP/IP communication mode, a routable address, port 102 open and
+the software target answered as PLCSIM Advanced. An instance started from TIA's own "Start simulation"
+is an *internal softbus* one, and `tia download --interface PLCSIM` puts the program on it first time.
+There is no public API for creating the internal kind, and the Advanced kind needs the PLCSIM Advanced
+licence. Until that is understood, the working flow is: start the simulation in TIA, then download.
+
+**`sim start` downloads to a simulation but cannot start one.** From TIA V18 the PLCSIM connection
+mode is gone; a simulated PLC is a PN/IE target behind the PLCSIM adapter, and TIA will not start an
+instance for a download. Power the instance on first, then run `sim start`.
+
+To fix: PLCSIM ships a Runtime API
+(`PLCSIM_V<n>\resources\bin\wwwroot\assets\lib\runtime\Siemens.Simatic.Simulation.Runtime.Api.x64.dll`)
+that could create and start an instance before the download. The calls, read off the V20 assembly:
+
+```
+SimulationRuntimeManager.RegisterInstance(ECPUType, string name) -> IInstance
+IInstance.SetIPSuite(uint interfaceIndex, SIPSuite4 suite, bool persistent)
+IInstance.PowerOn(uint timeoutMs) -> ERuntimeErrorCode
+IInstance.Run(uint timeoutMs)
+IInstance.UnregisterInstance()
+```
+
+`SIPSuite4` holds `IPAddress`, `SubnetMask`, `DefaultGateway`, each an `SIP`; how an `SIP` is built is
+the one piece still unchecked. Load the assembly by path and call it by reflection - the dev machine
+has no PLCSIM, so a compile-time reference would break the build. It covers **S7-1500, ET200SP/PRO, software and SINUMERIK CPUs
+only**: `ECPUType` has no S7-1200 entry, and `RegisterCustomInstance` rejects the 1214C article number
+(`WrongArgument`), though PLCSIM's own UI simulates S7-1200 from firmware 4.0. So an S7-1200
+simulation will still have to be started by hand until Siemens exposes it.
 
 ### Notes for upgrading
 

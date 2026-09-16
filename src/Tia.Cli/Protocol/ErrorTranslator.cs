@@ -98,6 +98,21 @@ namespace TiaCli.Protocol
                 };
             }
 
+            // The type name is the only clue TIA gives: the message says which method failed, never that
+            // the password was the problem or what it was measured against.
+            if (typeName.EndsWith("EngineeringPasswordPolicyViolationException", StringComparison.Ordinal) ||
+                typeName.EndsWith("PasswordPolicySettingsException", StringComparison.Ordinal))
+            {
+                return new WireError
+                {
+                    Code = WireErrorCodes.InvalidRequest,
+                    Message = "The password does not meet TIA Portal's password policy.",
+                    Detail = ex.Message,
+                    Hint = "Current TIA versions want at least 8 characters with upper case, lower case, " +
+                           "a digit and a special character, e.g. 'Demo_1234!'.",
+                };
+            }
+
             if (typeName.StartsWith("Siemens.Engineering", StringComparison.Ordinal))
                 return new WireError { Code = WireErrorCodes.OpennessError, Message = ex.Message, Detail = detail };
 

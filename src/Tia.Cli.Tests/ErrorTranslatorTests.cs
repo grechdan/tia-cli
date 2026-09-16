@@ -115,6 +115,36 @@ namespace TiaCli.Tests
         }
     }
 
+    public class PasswordPolicyTests
+    {
+        // Nested is fine: ErrorTranslator matches on the end of the type's full name.
+        internal sealed class EngineeringPasswordPolicyViolationException : Exception
+        {
+            public EngineeringPasswordPolicyViolationException(string message) : base(message) { }
+        }
+
+        [Fact]
+        public void PolicyViolationSaysItWasThePassword()
+        {
+            // TIA reports only which method failed, so the type name is the whole clue.
+            var error = ErrorTranslator.Describe(new EngineeringPasswordPolicyViolationException(
+                "Error when calling method 'SetPassword' of type 'PlcAccessLevelProvider'."));
+
+            Assert.Equal(WireErrorCodes.InvalidRequest, error.Code);
+            Assert.Contains("password policy", error.Message);
+            Assert.Contains("special character", error.Hint);
+            Assert.Contains("SetPassword", error.Detail);
+        }
+
+        [Fact]
+        public void PolicyViolationIsNotJustAnotherOpennessError()
+        {
+            var error = ErrorTranslator.Describe(new EngineeringPasswordPolicyViolationException("x"));
+            Assert.NotEqual(WireErrorCodes.OpennessError, error.Code);
+            Assert.Equal(2, ErrorTranslator.ExitCodeFor(error.Code));
+        }
+    }
+
     public class ExitCodeTests
     {
         // This table is documented in the README and is part of the scripting contract.

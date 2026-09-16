@@ -535,6 +535,10 @@ namespace TiaCli.Openness
             public string Address;
             /// <summary>The device interface to download to, as TIA names it (e.g. "1 X1").</summary>
             public string TargetInterface;
+            /// <summary>Answers the master-secret prompt. Configuration data, not a PLC credential.</summary>
+            public string MasterSecret;
+            /// <summary>Answers the access-level prompts. Given only when the caller insists.</summary>
+            public string PlcPassword;
             public bool IncludeHardware;
             public bool OnlyChanges;
             /// <summary>Allow the prompts that change or erase things beyond the download itself.</summary>
@@ -723,9 +727,17 @@ namespace TiaCli.Openness
             }
             else if (modes != null)
             {
-                var adapter = modes
+                // Both can be present at once, and they are not interchangeable: an instance reachable
+                // over the PLCSIM interface answers nothing on the virtual adapter. The plain "PLCSIM"
+                // one is what TIA's own "start simulation" uses, so it wins when both are offered.
+                var candidates = modes
                     .SelectMany(m => m.PcInterfaces.Select(i => new { Mode = m, Interface = i }))
-                    .FirstOrDefault(x => x.Interface.Name.IndexOf("PLCSIM", StringComparison.OrdinalIgnoreCase) >= 0);
+                    .Where(x => x.Interface.Name.IndexOf("PLCSIM", StringComparison.OrdinalIgnoreCase) >= 0)
+                    .ToList();
+
+                var adapter = candidates.FirstOrDefault(x =>
+                                  string.Equals(x.Interface.Name, "PLCSIM", StringComparison.OrdinalIgnoreCase))
+                              ?? candidates.FirstOrDefault();
 
                 if (adapter == null)
                 {
@@ -999,11 +1011,35 @@ namespace TiaCli.Openness
                     downgrade.Checked = Allowed(plan, decisions, refusals, "downgrade the target device");
                     return;
 
-                // -------- credentials: never
-                case DownloadPasswordConfiguration _:
-                    refusals.Add(new SessionException(WireErrorCodes.AccessDenied,
-                        "The target asks for a password, and this tool does not handle PLC passwords.",
-                        "Download once from the TIA Portal UI, or remove the protection for commissioning."));
+                // -------- credentials: only what this run was given, never anything remembered
+
+                // The master secret protects the CPU's confidential configuration data. Current firmware
+                // will not compile without one, so every download to such a CPU asks for it - refusing
+                // outright would leave a project built from the CLI impossible to download from it.
+                case PlcMasterSecretPassword masterSecret:
+                    if (string.IsNullOrEmpty(plan.MasterSecret))
+                    {
+                        refusals.Add(new SessionException(WireErrorCodes.AccessDenied,
+                            "The target asks for the PLC master secret.",
+                            "Give it for this run with --secret <password>."));
+                        return;
+                    }
+                    masterSecret.SetPassword(Secure(plan.MasterSecret));
+                    decisions.Add("master secret: supplied");
+                    return;
+
+                case DownloadPasswordConfiguration accessPassword:
+                    if (string.IsNullOrEmpty(plan.PlcPassword))
+                    {
+                        refusals.Add(new SessionException(WireErrorCodes.AccessDenied,
+                            $"The target asks for a password ({prompt.GetType().Name}), and this tool " +
+                            "holds none of its own.",
+                            "Give it for this run with --plc-password <password>, or download once from " +
+                            "the TIA Portal UI."));
+                        return;
+                    }
+                    accessPassword.SetPassword(Secure(plan.PlcPassword));
+                    decisions.Add($"password for {prompt.GetType().Name}: supplied");
                     return;
             }
 
@@ -1353,6 +1389,219 @@ namespace TiaCli.Openness
                 LogicalAddress = tag.LogicalAddress,
                 Comment = FirstText(tag.Comment),
             };
+        }
+
+        // ---------------------------------------------------------------- simulation
+
+        /// <summary>
+        /// Creates a PLCSIM instance for the device and powers it on. Nothing is downloaded: TIA can
+        /// only download to a simulation that already exists, so this is the step that has to come
+        /// first, and 'tia download' is the one that follows.
+        /// </summary>
+        public SimulationInstanceDto CreateSimulation(string deviceName, string cpuType, string address,
+            string mask, int timeoutMs)
+        {
+            var device = FindDevice(RequireProject(), deviceName);
+            var article = ArticleNumberOf(deviceName);
+
+            var type = cpuType ?? PlcSimCpuType(article);
+            var ip = address ?? DeviceAddressFallback(deviceName);
+
+            if (string.IsNullOrEmpty(ip))
+                throw new SessionException(WireErrorCodes.InvalidRequest,
+                    $"'{device.Name}' has no configured address to give the simulation.",
+                    "Set one with 'tia device ip', or pass --address.");
+
+            return PlcSimRuntime.Create(type, device.Name, ip, mask ?? "255.255.255.0", null,
+                (uint)(timeoutMs > 0 ? timeoutMs : 60000));
+        }
+
+        private string ArticleNumberOf(string deviceName)
+        {
+            try { return ((IEngineeringObject)RequireCpuItem(deviceName)).GetAttribute("OrderNumber") as string; }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// PLCSIM names its CPU types after the model in the article number: 6ES7 511-... is a CPU1511.
+        /// The S7-1200 range has no counterpart at all, so it is refused here rather than further in.
+        /// </summary>
+        private static string PlcSimCpuType(string article)
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(article ?? "", @"\b(\d{3})-");
+            if (match.Success)
+            {
+                var digits = match.Groups[1].Value;
+                if (digits.StartsWith("2", StringComparison.Ordinal))
+                    throw new SessionException(WireErrorCodes.InvalidRequest,
+                        $"PLCSIM's API cannot create an S7-1200 instance (this CPU is {article}).",
+                        "Create it in the PLCSIM window by hand, then use 'tia download'. Everything " +
+                        "from the S7-1500 range upwards works here.");
+
+                return "CPU1" + digits;
+            }
+
+            return "CPU1500_Unspecified";
+        }
+
+        // ---------------------------------------------------------------- protection
+
+        /// <summary>
+        /// Sets the CPU's protection: access level, the full-access password, and the password for
+        /// confidential configuration data (TIA's "master secret"). None of these are attributes - they
+        /// live behind services on the CPU item - and a V4.6 S7-1200 or a V2.9 S7-1500 will not compile
+        /// until the last two are set, which is what otherwise forces a trip through the TIA UI.
+        /// </summary>
+        public List<AttributeDto> SetProtection(string deviceName, string level, string password, string secret)
+        {
+            var cpu = RequireCpuItem(deviceName);
+            var changed = new List<AttributeDto>();
+
+            if (!string.IsNullOrEmpty(level) || !string.IsNullOrEmpty(password))
+            {
+                var access = cpu.GetService<Siemens.Engineering.HW.Features.PlcAccessLevelProvider>();
+                if (access == null)
+                    throw new SessionException(WireErrorCodes.NotFound,
+                        $"'{deviceName}' has no protection settings.");
+
+                if (!string.IsNullOrEmpty(level))
+                {
+                    Siemens.Engineering.HW.PlcProtectionAccessLevel parsed;
+                    try
+                    {
+                        parsed = (Siemens.Engineering.HW.PlcProtectionAccessLevel)Enum.Parse(
+                            typeof(Siemens.Engineering.HW.PlcProtectionAccessLevel), level, ignoreCase: true);
+                    }
+                    catch
+                    {
+                        throw new SessionException(WireErrorCodes.InvalidRequest,
+                            $"'{level}' is not an access level.",
+                            "One of: " + string.Join(", ",
+                                Enum.GetNames(typeof(Siemens.Engineering.HW.PlcProtectionAccessLevel))) + ".");
+                    }
+
+                    access.PlcProtectionAccessLevel = parsed;
+                    changed.Add(new AttributeDto { Name = "access level", Value = parsed.ToString() });
+                }
+
+                if (!string.IsNullOrEmpty(password))
+                {
+                    // The password belongs to full access, and only exists while the CPU sits at a more
+                    // restrictive level - "full access (no protection)" has nothing to unlock. A new CPU
+                    // already sits there, which is why the compiler demands the password unprompted.
+                    try
+                    {
+                        access.SetPassword(Siemens.Engineering.HW.PlcProtectionAccessLevel.FullAccess,
+                            Secure(password));
+                    }
+                    catch (Exception ex) when (ex.Message.IndexOf("Cannot set password", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        throw new SessionException(WireErrorCodes.InvalidRequest, ex.Message,
+                            $"The access level is '{access.PlcProtectionAccessLevel}', which has no password. " +
+                            "Leave --level out to keep the CPU's own level, or set a restrictive one " +
+                            "(ReadAccess, HMIAccess, NoAccess) and give the full-access password with it.");
+                    }
+
+                    changed.Add(new AttributeDto { Name = "full access password", Value = "set" });
+                }
+            }
+
+            if (!string.IsNullOrEmpty(secret))
+            {
+                var master = cpu.GetService<Siemens.Engineering.HW.Features.PlcMasterSecretConfigurator>();
+                if (master == null)
+                    throw new SessionException(WireErrorCodes.NotFound,
+                        $"'{deviceName}' has no confidential configuration password - older CPUs do not.");
+
+                // Protect() refuses when one is already configured, and a second run of the same command
+                // is the normal way to arrive here. Changing it needs the old one, which the caller may
+                // not have, so an existing secret is reported rather than treated as a failure.
+                try
+                {
+                    master.Protect(Secure(secret));
+                    changed.Add(new AttributeDto { Name = "confidential configuration password", Value = "set" });
+                }
+                catch (Exception ex) when (ex.Message.IndexOf("already configured", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    changed.Add(new AttributeDto
+                    {
+                        Name = "confidential configuration password",
+                        Value = "already set, left alone",
+                    });
+                }
+            }
+
+            if (changed.Count == 0)
+                throw new SessionException(WireErrorCodes.InvalidRequest, "Nothing to change.",
+                    "Give --level, --password or --secret.");
+
+            return changed;
+        }
+
+        private static System.Security.SecureString Secure(string text)
+        {
+            var secure = new System.Security.SecureString();
+            foreach (var character in text) secure.AppendChar(character);
+            secure.MakeReadOnly();
+            return secure;
+        }
+
+        // ---------------------------------------------------------------- attributes
+
+        /// <summary>
+        /// Every attribute of the device's CPU item. Openness exposes hardware settings as attributes
+        /// whose names are version-specific and undocumented, so listing them is the only way to find
+        /// the one you need - protection level and passwords among them.
+        /// </summary>
+        public List<AttributeDto> ListAttributes(string deviceName)
+        {
+            var item = (IEngineeringObject)RequireCpuItem(deviceName);
+            var result = new List<AttributeDto>();
+
+            foreach (var info in item.GetAttributeInfos())
+            {
+                object value = null;
+                try { value = item.GetAttribute(info.Name); }
+                catch { /* write-only or not readable in this state; the name still matters */ }
+
+                result.Add(new AttributeDto
+                {
+                    Name = info.Name,
+                    Type = value?.GetType().Name,
+                    Value = value?.ToString(),
+                });
+            }
+
+            return result.OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        /// <summary>Sets one attribute, converting the text to whatever type the attribute already holds.</summary>
+        public AttributeDto SetAttribute(string deviceName, string name, string value)
+        {
+            var item = (IEngineeringObject)RequireCpuItem(deviceName);
+
+            object current;
+            try { current = item.GetAttribute(name); }
+            catch (Exception ex)
+            {
+                throw new SessionException(WireErrorCodes.NotFound,
+                    $"'{name}' is not a readable attribute of '{deviceName}': {ex.Message}",
+                    $"Run 'tia device attrs {deviceName}' to see the names.");
+            }
+
+            item.SetAttribute(name, Coerce(value, current?.GetType()));
+
+            object written = null;
+            try { written = item.GetAttribute(name); } catch { }
+            return new AttributeDto { Name = name, Type = written?.GetType().Name, Value = written?.ToString() };
+        }
+
+        private static object Coerce(string value, Type target)
+        {
+            if (target == null || target == typeof(string)) return value;
+            if (target.IsEnum) return Enum.Parse(target, value, ignoreCase: true);
+            if (target == typeof(bool)) return bool.Parse(value);
+            return Convert.ChangeType(value, target, System.Globalization.CultureInfo.InvariantCulture);
         }
 
         // ---------------------------------------------------------------- compile

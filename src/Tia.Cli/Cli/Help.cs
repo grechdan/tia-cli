@@ -62,6 +62,13 @@ PROJECT
 HARDWARE
   devices                  List stations, their CPUs and addresses
   catalog <filter>         Search the hardware catalog for order numbers   [--limit <n>]
+  device attrs <device>    List the CPU's Openness attributes             [--filter <text>]
+  device set <device> <attribute> <value>
+                           Set one attribute
+  device protection <device>
+                           Access level and passwords, which a new CPU needs before it compiles
+                                 [--level <FullAccess|ReadAccess|HMIAccess|NoAccess>]
+                                 [--password <full access>] [--secret <confidential config data>]
   device add <type> <name> Add a station from a type identifier    [--device-name <n>]
   device ip <device>       Set the Ethernet address        [--address <ip>] [--mask <netmask>]
                                                            [--subnet <name>] names the TIA subnet
@@ -85,11 +92,17 @@ PLC (online)
   download <device>        Download to the PLC     [--address <ip>] [--via <mode>, default PN/IE]
                                                    [--interface <name>] [--slot <n>] [--hardware]
                                                    [--changes] [--stopped] [--force] [--target <name>]
+                                                   [--secret <master secret>] [--plc-password <pw>]
                            Routine prompts are answered like the dialog's defaults; destructive
                            ones (reset, reinitialize, up/downgrade) abort unless --force.
                            Password-protected targets are refused - use the TIA Portal UI.
   upload <ip>              Upload the station at <ip> into the project as a new station
                                                    [--via <mode>] [--interface <name>] [--slot <n>]
+  sim create <device>      Create a PLCSIM instance for the device and power it on
+                                                   [--cpu <type>] [--address <ip>] [--mask <netmask>]
+                                                   [--timeout <ms>]
+                           S7-1500 and friends only - PLCSIM's API has no S7-1200. Download to it
+                           afterwards with 'tia download <device>'.
   sim start <device>       Download to S7-PLCSIM; from V18 start the instance first
                                                    [--address <ip>] [--advanced] [--stopped]
                            Needs S7-PLCSIM installed; PLCSIM Advanced instances take --advanced.

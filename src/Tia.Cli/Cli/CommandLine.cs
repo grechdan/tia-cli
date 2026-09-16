@@ -17,7 +17,7 @@ namespace TiaCli.Cli
         {
             "attach", "idle", "openness-version", "limit", "filter", "table", "type", "address",
             "subnet", "device-name", "out", "file", "code", "project", "max-chars", "view", "router",
-            "mask", "subnet-mask", "via", "interface", "slot", "target",
+            "mask", "subnet-mask", "via", "interface", "slot", "target", "level", "password", "secret", "plc-password", "cpu", "timeout",
         };
 
         /// <summary>Verbs whose first word is only a group name.</summary>

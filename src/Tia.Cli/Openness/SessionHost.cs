@@ -128,6 +128,26 @@ namespace TiaCli.Openness
             switch (request.Method)
             {
                 case "portal.list": return _session.ListPortals();
+                case "device.attributes":
+                    return _session.ListAttributes(new Params(request.Params).RequiredString("device"));
+                case "device.setAttribute":
+                {
+                    var attribute = new Params(request.Params);
+                    return _session.SetAttribute(attribute.RequiredString("device"),
+                        attribute.RequiredString("name"), attribute.RequiredString("value"));
+                }
+                case "sim.create":
+                {
+                    var sim = new Params(request.Params);
+                    return _session.CreateSimulation(sim.RequiredString("device"), sim.String("cpu"),
+                        sim.String("address"), sim.String("mask"), sim.Int("timeout", 60000));
+                }
+                case "device.protection":
+                {
+                    var protection = new Params(request.Params);
+                    return _session.SetProtection(protection.RequiredString("device"),
+                        protection.String("level"), protection.String("password"), protection.String("secret"));
+                }
                 case "session.ensure": return Ensure();
                 case "session.status": return _session.IsConnected
                     ? _session.Status()
@@ -199,6 +219,8 @@ namespace TiaCli.Openness
             plan.InterfaceNumber = p.Int("slot", 1);
             plan.Address = p.String("address");
             plan.TargetInterface = p.String("target");
+            plan.MasterSecret = p.String("secret");
+            plan.PlcPassword = p.String("plcPassword");
             plan.IncludeHardware = p.Bool("hardware", false);
             plan.OnlyChanges = p.Bool("onlyChanges", false);
             plan.Force = p.Bool("force", false);

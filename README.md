@@ -281,8 +281,11 @@ tia compile PLC_1 || echo "compile failed"
   series of callbacks, and an unanswered one aborts the transfer. `tia download` answers the routine
   prompts the way the dialog's defaults would and records each answer in its output; the destructive
   ones — reset module, reinitialize data blocks, firmware up/downgrade, protection-level changes —
-  abort with the prompt's name unless `--force` was given. Password prompts are always refused: a
-  CLI has no business holding PLC passwords. An unrecognised prompt aborts by name so it can be
+  abort with the prompt's name unless `--force` was given. Password prompts are refused unless the
+  password was given for that run: `--secret` answers the master-secret prompt, which a current CPU
+  requires before it will compile at all, and `--plc-password` answers the access-level ones. Neither
+  is remembered anywhere, and without them the prompt aborts by name as before — a CLI has no
+  business holding PLC passwords of its own accord. An unrecognised prompt aborts by name so it can be
   added deliberately rather than answered by accident.
 - **There is no "start simulation" call in Openness.** What exists is downloading to a simulator, and
   `tia sim start` is that download. Up to V17 it goes to the `PLCSIM` connection mode, which also
