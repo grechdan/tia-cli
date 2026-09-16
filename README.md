@@ -14,7 +14,7 @@ does not survive it, and opening a project takes minutes. So `tia` works two way
 ```bash
 tia devices                                   # uses the portal already on your screen
 tia session start --project C:\p\Line.ap20    # or start one and keep it warm
-tia blocks PLC_1 --filter Motor
+tia blocks PLC_1 --tree
 tia compile PLC_1 && tia project save
 ```
 
@@ -217,9 +217,18 @@ Run `tia help` for the full text.
 | `tia catalog <filter>` | Search the hardware catalog for order numbers |
 | `tia device add <type> <name>` | Add a station from a type identifier |
 | `tia device ip <device>` | `--address <ip> --mask <netmask>`, `--subnet <name>` for the TIA subnet, gateway with `--router <ip>` / `--no-router` |
-| `tia blocks <device>` | List blocks (`--filter`, `--system`) |
+| `tia blocks <device>` | List blocks (`--filter`, `--type OB,FB,FC,DB`, `--tree`, `--system`) |
+| `tia block show <device> <block>` | Header, interface and network titles |
+| `tia block source <device> <block>` | The block as SCL/STL/DB text (`--out <path>`, `--deps`) |
 | `tia block export <device> <block>` | Openness XML (`--out <path>`, `--print`) |
-| `tia scl import <device> <name>` | From `--file`, `--code`, or stdin (`--no-generate`) |
+| `tia block import <device> <file>` | Blocks from Openness XML (`--folder <path>`, `--overwrite`) |
+| `tia block rename <device> <block> <new>` | Rename a block |
+| `tia block delete <device> <block>` | Delete a block (`--force` skips the question) |
+| `tia folder add` / `tia folder delete <device> <path>` | Folders in the block tree |
+| `tia sources <device>` | List external sources |
+| `tia source add <device> <name>` | SCL from `--file`, `--code`, or stdin (`--no-generate`, `--folder`) |
+| `tia source generate <device> <name>` | Compile a source already in the project (`--folder`) |
+| `tia source delete <device> <name>` | Delete a source; blocks it made stay |
 | `tia tables <device>` / `tia tags <device>` | Tag tables and tags (`--table`) |
 | `tia table add` / `tia tag add` | Create them (`--type`, `--address`) |
 | `tia compile <device>` | Compile. Exits non-zero when it reports errors. |
@@ -245,7 +254,7 @@ Global: `--json`, `--attach <pid>`, `--start`, `--headless`, `--new`, `--no-daem
 
 ```bash
 tia devices --json | jq -r '.[].name'
-type block.scl | tia scl import PLC_1 Motor
+type block.scl | tia source add PLC_1 Motor
 tia compile PLC_1 || echo "compile failed"
 ```
 
@@ -276,7 +285,16 @@ tia compile PLC_1 || echo "compile failed"
   project open", the session re-probes the portal's project list first — attaching to someone's live
   portal is the main use case, and their project appearing mid-session is normal.
 - **`tia project new` writes nothing to disk until `tia project save`**, and blocks made by
-  `scl import` are not checked until `tia compile`.
+  `source add` are not checked until `tia compile`.
+- **A block's interface is not readable through Openness.** Only `DataBlock` has an `Interface`
+  property at all, and its members give up nothing but their names — no data type, no start value, no
+  comment. So `tia block show` exports the block to a temporary file and reads the SimaticML back.
+  That is why it takes a moment where `tia blocks` is instant, and why it matches elements by local
+  name: the SimaticML namespaces carry a schema version that moves with every TIA release.
+- **SCL is the only way text becomes a block.** `CreateFB` makes an empty block with no way to set a
+  body, and XML import demands the full schema — so `tia source add` writes the text to a file,
+  registers it as an external source and asks TIA to compile it. `tia block source` is the same road
+  in reverse, which makes the pair a round trip.
 - **A download is a dialog, even without a screen.** Openness turns TIA's download dialog into a
   series of callbacks, and an unanswered one aborts the transfer. `tia download` answers the routine
   prompts the way the dialog's defaults would and records each answer in its output; the destructive

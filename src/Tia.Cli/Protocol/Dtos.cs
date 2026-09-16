@@ -103,6 +103,8 @@ namespace TiaCli.Protocol
         public string SourceName { get; set; }
         public string FilePath { get; set; }
         public bool Generated { get; set; }
+        /// <summary>The program-blocks folder the generated blocks landed in.</summary>
+        public string Folder { get; set; }
         public List<string> GeneratedBlocks { get; set; }
     }
 

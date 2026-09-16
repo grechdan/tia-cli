@@ -171,15 +171,41 @@ namespace TiaCli.Openness
                     p.RequiredString("device"), p.String("address"), p.String("subnet"),
                     p.String("mask"), p.String("router"), p.NullableBool("useRouter"));
 
+                case "source.list": return _session.ListSources(p.RequiredString("device"));
                 case "source.importScl": return _session.ImportScl(
                     p.RequiredString("device"), p.RequiredString("name"), p.String("code"),
-                    p.String("filePath"), p.Bool("generate", true));
+                    p.String("filePath"), p.Bool("generate", true), p.String("folder"));
+                case "source.generate": return _session.GenerateFromSource(
+                    p.RequiredString("device"), p.RequiredString("name"), p.String("folder"));
+                case "source.delete": return _session.DeleteSource(
+                    p.RequiredString("device"), p.RequiredString("name"));
 
                 case "block.list": return _session.ListBlocks(
-                    p.RequiredString("device"), p.String("filter"), p.Bool("includeSystemGroups", false));
+                    p.RequiredString("device"), p.String("filter"), p.String("type"),
+                    p.Bool("includeSystemGroups", false));
+                case "block.tree": return _session.BlockTree(
+                    p.RequiredString("device"), p.String("filter"), p.String("type"),
+                    p.Bool("includeSystemGroups", false));
+                case "block.show": return _session.DescribeBlock(
+                    p.RequiredString("device"), p.RequiredString("block"));
                 case "block.export": return _session.ExportBlock(
                     p.RequiredString("device"), p.RequiredString("block"), p.RequiredString("targetPath"),
                     p.Bool("inline", false), p.Int("maxInlineChars", 200000));
+                case "block.exportSource": return _session.ExportBlockSource(
+                    p.RequiredString("device"), p.RequiredString("block"), p.String("targetPath"),
+                    p.Bool("withDependencies", false), p.Bool("inline", false),
+                    p.Int("maxInlineChars", 200000));
+                case "block.import": return _session.ImportBlocks(
+                    p.RequiredString("device"), p.RequiredString("filePath"), p.String("folder"),
+                    p.Bool("overwrite", false));
+                case "block.rename": return _session.RenameBlock(
+                    p.RequiredString("device"), p.RequiredString("block"), p.RequiredString("newName"));
+                case "block.delete": return _session.DeleteBlock(
+                    p.RequiredString("device"), p.RequiredString("block"));
+                case "block.createFolder": return _session.CreateBlockFolder(
+                    p.RequiredString("device"), p.RequiredString("folder"));
+                case "block.deleteFolder": return _session.DeleteBlockFolder(
+                    p.RequiredString("device"), p.RequiredString("folder"));
 
                 case "tag.listTables": return _session.ListTagTables(p.RequiredString("device"));
                 case "tag.list": return _session.ListTags(p.RequiredString("device"), p.String("table"));

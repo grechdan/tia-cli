@@ -31,9 +31,21 @@ namespace TiaCli.Cli
                 case "device ip": return DeviceIp(cmd, executor, output);
 
                 case "blocks": return Blocks(cmd, executor, output);
-                case "block export": return BlockExport(cmd, executor, output);
+                case "block show": return BlockShow(cmd, executor, output);
+                case "block source": return BlockExport(cmd, executor, output, asSource: true);
+                case "block export": return BlockExport(cmd, executor, output, asSource: false);
+                case "block import": return BlockImport(cmd, executor, output);
+                case "block rename": return BlockRename(cmd, executor, output);
+                case "block delete": return BlockDelete(cmd, executor, output);
+                case "folder add": return FolderAdd(cmd, executor, output);
+                case "folder delete": return FolderDelete(cmd, executor, output);
 
-                case "scl import": return SclImport(cmd, executor, output);
+                case "sources": return Sources(cmd, executor, output);
+                case "source add": return SourceAdd(cmd, executor, output);
+                case "source generate": return SourceGenerate(cmd, executor, output);
+                case "source delete": return SourceDelete(cmd, executor, output);
+                // The spelling this tool shipped with, kept working.
+                case "scl import": return SourceAdd(cmd, executor, output);
 
                 case "tables": return Tables(cmd, executor, output);
                 case "tags": return Tags(cmd, executor, output);
@@ -383,18 +395,42 @@ namespace TiaCli.Cli
 
         private static int Blocks(CommandLine cmd, IExecutor executor, Output output)
         {
+            var device = cmd.Positional(0, "device");
+            var filter = cmd.Value("filter");
+            var type = cmd.Value("type");
+            var system = cmd.Has("system");
+
+            if (cmd.Has("tree"))
+            {
+                var tree = Call(executor, "block.tree", new
+                {
+                    device,
+                    filter,
+                    type,
+                    includeSystemGroups = system,
+                });
+
+                if (output.AsJson) { output.Json(tree); return 0; }
+
+                var root = JsonUtil.To<BlockTreeNodeDto>(tree);
+                output.Line(root.Name);
+                RenderTree(root.Children, string.Empty, output);
+                return 0;
+            }
+
             var result = Call(executor, "block.list", new
             {
-                device = cmd.Positional(0, "device"),
-                filter = cmd.Value("filter"),
-                includeSystemGroups = cmd.Has("system"),
+                device,
+                filter,
+                type,
+                includeSystemGroups = system,
             });
 
             if (output.AsJson) { output.Json(result); return 0; }
 
             var blocks = JsonUtil.To<List<BlockDto>>(result);
             output.Table(
-                new[] { "name", "kind", "no", "language", "group", "state" },
+                new[] { "name", "kind", "no", "language", "folder", "state" },
                 blocks.Select(b => new[]
                 {
                     b.Name,
@@ -408,30 +444,163 @@ namespace TiaCli.Cli
             return 0;
         }
 
-        private static int BlockExport(CommandLine cmd, IExecutor executor, Output output)
+        /// <summary>
+        /// Draws the folder tree. The spine is ASCII on purpose: the console inherits an OEM code
+        /// page unless somebody changes it, and box-drawing characters come out as mojibake there.
+        /// </summary>
+        private static void RenderTree(List<BlockTreeNodeDto> nodes, string prefix, Output output)
+        {
+            if (nodes == null) return;
+
+            for (var i = 0; i < nodes.Count; i++)
+            {
+                var node = nodes[i];
+                var last = i == nodes.Count - 1;
+                var label = node.Kind == "folder"
+                    ? node.Name
+                    : node.Name + "  " + Describe(node.Block);
+
+                output.Line(prefix + (last ? "`- " : "+- ") + label);
+                RenderTree(node.Children, prefix + (last ? "   " : "|  "), output);
+            }
+        }
+
+        private static string Describe(BlockDto block)
+        {
+            if (block == null) return string.Empty;
+
+            var text = block.BlockType + block.Number + "  " + block.Language;
+            if (block.IsKnowHowProtected) text += "  protected";
+            else if (!block.IsConsistent) text += "  inconsistent";
+            return text;
+        }
+
+        private static int BlockShow(CommandLine cmd, IExecutor executor, Output output)
+        {
+            var result = Call(executor, "block.show", new
+            {
+                device = cmd.Positional(0, "device"),
+                block = cmd.Positional(1, "block"),
+            });
+
+            if (output.AsJson) { output.Json(result); return 0; }
+
+            var block = JsonUtil.To<BlockDetailDto>(result);
+            output.Line(block.Name + "  (" + block.BlockType + block.Number + ")");
+            output.Pairs(new[]
+            {
+                Output.KV("folder", block.Path),
+                Output.KV("language", block.Language),
+                Output.KV("numbering", block.AutoNumber ? "automatic" : "manual"),
+                Output.KV("memory", block.MemoryLayout),
+                Output.KV("namespace", block.Namespace),
+                Output.KV("event class", block.SecondaryType),
+                Output.KV("instance of", block.InstanceOfName),
+                Output.KV("state", block.IsKnowHowProtected
+                    ? "know-how protected"
+                    : (block.IsConsistent ? "ok" : "inconsistent")),
+                Output.KV("header", Header(block)),
+                Output.KV("modified", block.ModifiedDate),
+                Output.KV("compiled", block.CompileDate),
+                Output.KV("comment", Output.Truncate(block.Comment, 70)),
+            });
+
+            if (block.IsKnowHowProtected)
+            {
+                output.Line();
+                output.Detail("The interface and the code are sealed; only the header is readable.");
+                return 0;
+            }
+
+            var members = block.Interface ?? new List<InterfaceMemberDto>();
+            if (members.Count > 0)
+            {
+                output.Line();
+                output.Line("interface");
+                output.Table(
+                    new[] { "section", "name", "type", "default", "comment" },
+                    members.Select(m => new[]
+                    {
+                        m.Section ?? "-",
+                        // Nested struct members are indented rather than dotted: the nesting is the
+                        // point, and a long dotted path buries the name you are looking for.
+                        new string(' ', m.Depth * 2) + m.Name,
+                        m.DataType ?? "-",
+                        m.StartValue ?? "",
+                        Output.Truncate(m.Comment, 40),
+                    }).ToList());
+            }
+
+            var networks = block.Networks ?? new List<NetworkDto>();
+            if (networks.Count > 0)
+            {
+                output.Line();
+                output.Line("networks");
+                output.Table(
+                    new[] { "#", "language", "title" },
+                    networks.Select(n => new[]
+                    {
+                        n.Index.ToString(),
+                        n.Language ?? "-",
+                        Output.Truncate(n.Title ?? n.Comment, 70),
+                    }).ToList());
+            }
+
+            output.Line();
+            output.Detail("'tia block source' prints the code itself; 'tia block export' its XML.");
+            return 0;
+        }
+
+        private static string Header(BlockDetailDto block)
+        {
+            var parts = new[] { block.HeaderName, block.HeaderFamily, block.HeaderVersion, block.HeaderAuthor }
+                .Where(p => !string.IsNullOrEmpty(p))
+                .ToList();
+            return parts.Count == 0 ? null : string.Join(" / ", parts);
+        }
+
+        /// <summary>
+        /// The two block exports differ only in what they ask for, so they share the plumbing: where
+        /// the file goes, when it is printed instead, and how a truncated print is reported.
+        /// </summary>
+        private static int BlockExport(CommandLine cmd, IExecutor executor, Output output,
+            bool asSource)
         {
             var device = cmd.Positional(0, "device");
             var block = cmd.Positional(1, "block");
-            var print = cmd.Has("print");
+            // Source is normally wanted on the terminal, XML normally on disk.
+            var print = asSource ? !cmd.Has("out") : cmd.Has("print");
 
-            var leaf = block.Replace('\\', '/').Split('/').Last();
             var target = cmd.Value("out");
-            if (string.IsNullOrEmpty(target))
+            if (string.IsNullOrEmpty(target) && !asSource)
             {
+                var leaf = block.Replace('\\', '/').Split('/').Last();
                 // With --print the file is a byproduct, so it goes somewhere disposable.
                 target = print
                     ? Path.Combine(Path.GetTempPath(), "tia-cli-export", leaf + ".xml")
                     : Path.Combine(Environment.CurrentDirectory, leaf + ".xml");
             }
 
-            var result = Call(executor, "block.export", new
-            {
-                device,
-                block,
-                targetPath = Path.GetFullPath(target),
-                inline = print,
-                maxInlineChars = cmd.Int("max-chars", 2000000),
-            });
+            var maxChars = cmd.Int("max-chars", 2000000);
+            var result = asSource
+                ? Call(executor, "block.exportSource", new
+                {
+                    device,
+                    block,
+                    // Null lets the session pick the extension from the block's language.
+                    targetPath = string.IsNullOrEmpty(target) ? null : Path.GetFullPath(target),
+                    withDependencies = cmd.Has("deps"),
+                    inline = print,
+                    maxInlineChars = maxChars,
+                })
+                : Call(executor, "block.export", new
+                {
+                    device,
+                    block,
+                    targetPath = Path.GetFullPath(target),
+                    inline = print,
+                    maxInlineChars = maxChars,
+                });
 
             if (output.AsJson) { output.Json(result); return 0; }
 
@@ -440,7 +609,7 @@ namespace TiaCli.Cli
             {
                 Console.WriteLine(export.Content);
                 if (export.Truncated)
-                    output.Warn($"Output truncated at {cmd.Int("max-chars", 2000000)} characters; " +
+                    output.Warn($"Output truncated at {maxChars} characters; " +
                                 "the whole block is in " + export.FilePath);
                 return 0;
             }
@@ -449,9 +618,137 @@ namespace TiaCli.Cli
             return 0;
         }
 
+        private static int BlockImport(CommandLine cmd, IExecutor executor, Output output)
+        {
+            var result = Call(executor, "block.import", new
+            {
+                device = cmd.Positional(0, "device"),
+                filePath = Path.GetFullPath(cmd.Positional(1, "file")),
+                folder = cmd.Value("folder"),
+                overwrite = cmd.Has("overwrite"),
+            });
+
+            if (output.AsJson) { output.Json(result); return 0; }
+
+            var import = JsonUtil.To<BlockImportDto>(result);
+            var blocks = import.Blocks ?? new List<BlockDto>();
+
+            output.Line(blocks.Count == 1
+                ? $"Imported {blocks[0].Name} into {import.Folder}."
+                : $"Imported {blocks.Count} block(s) into {import.Folder}.");
+
+            foreach (var block in blocks)
+                output.Detail("  " + block.Name + "  " + block.BlockType + block.Number);
+
+            output.Detail("Imported blocks are not checked until 'tia compile <device>'.");
+            return 0;
+        }
+
+        private static int BlockRename(CommandLine cmd, IExecutor executor, Output output)
+        {
+            var result = Call(executor, "block.rename", new
+            {
+                device = cmd.Positional(0, "device"),
+                block = cmd.Positional(1, "block"),
+                newName = cmd.Positional(2, "new name"),
+            });
+
+            if (output.AsJson) { output.Json(result); return 0; }
+
+            var block = JsonUtil.To<BlockDto>(result);
+            output.Line($"Renamed to {block.Name} ({block.Path}).");
+            output.Detail("Callers still name the old block; 'tia compile' will say which.");
+            return 0;
+        }
+
+        private static int BlockDelete(CommandLine cmd, IExecutor executor, Output output)
+        {
+            var device = cmd.Positional(0, "device");
+            var name = cmd.Positional(1, "block");
+
+            if (!Confirm(cmd, output, $"Delete block '{name}' from {device}?")) return 2;
+
+            var result = Call(executor, "block.delete", new { device, block = name });
+            if (output.AsJson) { output.Json(result); return 0; }
+
+            var block = JsonUtil.To<BlockDto>(result);
+            output.Line($"Deleted {block.Name} from {block.Path}.");
+            output.Detail("Still only in memory - 'tia project save' makes it permanent.");
+            return 0;
+        }
+
+        private static int FolderAdd(CommandLine cmd, IExecutor executor, Output output)
+        {
+            var result = Call(executor, "block.createFolder", new
+            {
+                device = cmd.Positional(0, "device"),
+                folder = cmd.Positional(1, "path"),
+            });
+
+            if (output.AsJson) { output.Json(result); return 0; }
+
+            var folder = JsonUtil.To<BlockFolderDto>(result);
+            output.Line("Folder " + folder.Path);
+            output.Detail("Intermediate folders in the path were created as needed.");
+            return 0;
+        }
+
+        private static int FolderDelete(CommandLine cmd, IExecutor executor, Output output)
+        {
+            var device = cmd.Positional(0, "device");
+            var path = cmd.Positional(1, "path");
+
+            if (!Confirm(cmd, output, $"Delete folder '{path}' and everything in it?")) return 2;
+
+            var result = Call(executor, "block.deleteFolder", new { device, folder = path });
+            if (output.AsJson) { output.Json(result); return 0; }
+
+            var folder = JsonUtil.To<BlockFolderDto>(result);
+            output.Line($"Deleted {folder.Path} " +
+                        $"({folder.BlockCount} block(s), {folder.FolderCount} folder(s)).");
+            output.Detail("Still only in memory - 'tia project save' makes it permanent.");
+            return 0;
+        }
+
+        /// <summary>
+        /// Asks before something irreversible. --force skips the question; so does --json, which is
+        /// only ever used by a script that cannot answer one. A redirected stdin with neither is the
+        /// dangerous case - nobody is there to say no - so it refuses instead of assuming yes.
+        /// </summary>
+        private static bool Confirm(CommandLine cmd, Output output, string question)
+        {
+            if (cmd.Has("force") || cmd.Has("yes") || output.AsJson) return true;
+
+            if (Console.IsInputRedirected)
+                throw new WireException(WireErrorCodes.InvalidRequest,
+                    "This deletes something and there is nobody to ask.",
+                    "Add --force when running it from a script.");
+
+            Console.Write(question + " [y/N] ");
+            var answer = Console.ReadLine();
+            if (string.Equals(answer?.Trim(), "y", StringComparison.OrdinalIgnoreCase)) return true;
+
+            output.Line("Left alone.");
+            return false;
+        }
+
         // ---------------------------------------------------------------- sources
 
-        private static int SclImport(CommandLine cmd, IExecutor executor, Output output)
+        private static int Sources(CommandLine cmd, IExecutor executor, Output output)
+        {
+            var result = Call(executor, "source.list", new { device = cmd.Positional(0, "device") });
+            if (output.AsJson) { output.Json(result); return 0; }
+
+            var sources = JsonUtil.To<List<SourceDto>>(result);
+            output.Table(
+                new[] { "source", "folder" },
+                sources.Select(s => new[] { s.Name, s.Path }).ToList());
+
+            output.Detail("'tia source generate <device> <name>' compiles one into blocks.");
+            return 0;
+        }
+
+        private static int SourceAdd(CommandLine cmd, IExecutor executor, Output output)
         {
             var device = cmd.Positional(0, "device");
             var name = cmd.Positional(1, "name");
@@ -467,24 +764,67 @@ namespace TiaCli.Cli
                     throw new WireException(WireErrorCodes.InvalidRequest, "No SCL arrived on stdin.");
             }
 
-            var generate = !cmd.Has("no-generate");
             var result = Call(executor, "source.importScl", new
             {
                 device,
                 name,
                 code,
                 filePath = string.IsNullOrEmpty(file) ? null : Path.GetFullPath(file),
-                generate,
+                generate = !cmd.Has("no-generate"),
+                folder = cmd.Value("folder"),
             });
 
             if (output.AsJson) { output.Json(result); return 0; }
 
-            var import = JsonUtil.To<SourceImportDto>(result);
-            output.Line("Imported source " + import.SourceName);
-            if (import.GeneratedBlocks != null && import.GeneratedBlocks.Count > 0)
-                output.Line("Generated: " + string.Join(", ", import.GeneratedBlocks));
-            output.Detail("Generated blocks are not checked until 'tia compile <device>'.");
+            RenderSourceImport(JsonUtil.To<SourceImportDto>(result), output);
             return 0;
+        }
+
+        private static int SourceGenerate(CommandLine cmd, IExecutor executor, Output output)
+        {
+            var result = Call(executor, "source.generate", new
+            {
+                device = cmd.Positional(0, "device"),
+                name = cmd.Positional(1, "name"),
+                folder = cmd.Value("folder"),
+            });
+
+            if (output.AsJson) { output.Json(result); return 0; }
+
+            RenderSourceImport(JsonUtil.To<SourceImportDto>(result), output);
+            return 0;
+        }
+
+        private static int SourceDelete(CommandLine cmd, IExecutor executor, Output output)
+        {
+            var device = cmd.Positional(0, "device");
+            var name = cmd.Positional(1, "name");
+
+            if (!Confirm(cmd, output, $"Delete source '{name}' from {device}?")) return 2;
+
+            var result = Call(executor, "source.delete", new { device, name });
+            if (output.AsJson) { output.Json(result); return 0; }
+
+            var source = JsonUtil.To<SourceDto>(result);
+            output.Line($"Deleted {source.Name}.");
+            output.Detail("The blocks it generated are still there.");
+            return 0;
+        }
+
+        private static void RenderSourceImport(SourceImportDto import, Output output)
+        {
+            output.Line("Source " + import.SourceName);
+
+            if (import.GeneratedBlocks != null && import.GeneratedBlocks.Count > 0)
+            {
+                output.Line("Generated into " + import.Folder + ": " +
+                            string.Join(", ", import.GeneratedBlocks));
+                output.Detail("Generated blocks are not checked until 'tia compile <device>'.");
+                return;
+            }
+
+            output.Detail("Not generated. 'tia source generate <device> " +
+                          import.SourceName + "' turns it into blocks.");
         }
 
         // ---------------------------------------------------------------- tags

@@ -25,7 +25,7 @@ namespace TiaCli.Openness
     /// Owns the TiaPortal connection and the open project. Every method here runs on the
     /// <see cref="OpennessThread"/>; none of it is safe to call from anywhere else.
     /// </summary>
-    internal sealed class TiaSession : IDisposable
+    internal sealed partial class TiaSession : IDisposable
     {
         private TiaPortal _portal;
         private Project _project;
@@ -471,7 +471,7 @@ namespace TiaCli.Openness
             var software = RequirePlcSoftware(deviceName);
             RequireUserInterface();
 
-            var block = FindBlock(software, blockPath);
+            var block = RequireBlock(software, blockPath).Block;
 
             // A protected block opens as an empty editor rather than failing, which looks like the
             // command did nothing at all.
@@ -1150,138 +1150,6 @@ namespace TiaCli.Openness
             return carrier.Item1;
         }
 
-        // ---------------------------------------------------------------- sources
-
-        /// <summary>
-        /// Writes SCL to a file, registers it as an external source and asks TIA to compile it into
-        /// blocks. This is the only route from SCL text to a real block: block XML import needs the
-        /// full Openness schema, and CreateFB makes an empty block with no way to set its body.
-        /// </summary>
-        public SourceImportDto ImportScl(string deviceName, string sourceName, string code,
-            string filePath, bool generate)
-        {
-            var software = RequirePlcSoftware(deviceName);
-
-            if (string.IsNullOrEmpty(code) && string.IsNullOrEmpty(filePath))
-                throw new SessionException(WireErrorCodes.InvalidRequest,
-                    "Provide either the SCL text or a path to an .scl file.");
-
-            var name = sourceName;
-            if (!name.EndsWith(".scl", StringComparison.OrdinalIgnoreCase)) name += ".scl";
-
-            string path;
-            if (!string.IsNullOrEmpty(code))
-            {
-                // The BOM is suppressed: TIA reports a syntax error on the first line when present.
-                path = Path.Combine(Path.GetTempPath(), "tia-cli-src", name);
-                var dir = Path.GetDirectoryName(path);
-                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-                File.WriteAllText(path, code, new UTF8Encoding(false));
-            }
-            else
-            {
-                path = Path.GetFullPath(filePath);
-                if (!File.Exists(path))
-                    throw new SessionException(WireErrorCodes.NotFound, $"Source file not found: {path}");
-            }
-
-            var sources = software.ExternalSourceGroup.ExternalSources;
-
-            // Openness refuses to add a second source under the same name; replacing makes repeated
-            // edit-and-retry cycles work, which is the normal way code gets written.
-            var previous = sources.Find(name);
-            if (previous != null) previous.Delete();
-
-            var source = sources.CreateFromFile(name, path);
-
-            var result = new SourceImportDto
-            {
-                SourceName = source.Name,
-                FilePath = path,
-                Generated = generate,
-                GeneratedBlocks = new List<string>(),
-            };
-
-            if (generate)
-            {
-                // KeepOnError leaves whatever compiled behind instead of rolling everything back, so
-                // a partially valid source still shows the caller how far it got.
-                var blocks = source.GenerateBlocksFromSource(GenerateBlockOption.KeepOnError);
-                if (blocks != null)
-                {
-                    foreach (PlcBlock block in blocks)
-                        result.GeneratedBlocks.Add(block.Name);
-                }
-
-                if (result.GeneratedBlocks.Count == 0)
-                    throw new SessionException(WireErrorCodes.OpennessError,
-                        $"Source '{name}' produced no blocks. The SCL almost certainly has a syntax " +
-                        "error; open the source in TIA Portal to see the compiler message.");
-            }
-
-            return result;
-        }
-
-        // ---------------------------------------------------------------- blocks
-
-        public List<BlockDto> ListBlocks(string deviceName, string nameFilter, bool includeSystemGroups)
-        {
-            var software = RequirePlcSoftware(deviceName);
-            var blocks = new List<BlockDto>();
-            CollectBlocks(software.BlockGroup, software.BlockGroup.Name, blocks, includeSystemGroups);
-
-            if (!string.IsNullOrEmpty(nameFilter))
-            {
-                blocks = blocks
-                    .Where(b => b.Name.IndexOf(nameFilter, StringComparison.OrdinalIgnoreCase) >= 0)
-                    .ToList();
-            }
-
-            return blocks;
-        }
-
-        public ExportResultDto ExportBlock(string deviceName, string blockPath, string targetPath,
-            bool inline, int maxInlineChars)
-        {
-            var software = RequirePlcSoftware(deviceName);
-            var block = FindBlock(software, blockPath);
-
-            if (block.IsKnowHowProtected)
-                throw new SessionException(WireErrorCodes.AccessDenied,
-                    $"Block '{block.Name}' is know-how protected and cannot be exported.");
-
-            var file = new FileInfo(targetPath);
-            if (file.Directory != null && !file.Directory.Exists) file.Directory.Create();
-            // Openness refuses to overwrite; clearing first makes repeated exports idempotent.
-            if (file.Exists) file.Delete();
-
-            block.Export(file, ExportOptions.None);
-            file.Refresh();
-
-            var dto = new ExportResultDto
-            {
-                Name = block.Name,
-                FilePath = file.FullName,
-                Bytes = file.Length,
-            };
-
-            if (inline)
-            {
-                var text = File.ReadAllText(file.FullName);
-                if (text.Length > maxInlineChars)
-                {
-                    dto.Content = text.Substring(0, maxInlineChars);
-                    dto.Truncated = true;
-                }
-                else
-                {
-                    dto.Content = text;
-                }
-            }
-
-            return dto;
-        }
-
         // ---------------------------------------------------------------- tags
 
         public List<TagTableDto> ListTagTables(string deviceName)
@@ -1859,88 +1727,6 @@ namespace TiaCli.Openness
                     yield return address;
         }
 
-        private static void CollectBlocks(PlcBlockGroup group, string path, List<BlockDto> sink,
-            bool includeSystemGroups)
-        {
-            foreach (PlcBlock block in group.Blocks)
-                sink.Add(Describe(block, path));
-
-            foreach (PlcBlockUserGroup child in group.Groups)
-                CollectBlocks(child, path + "/" + child.Name, sink, includeSystemGroups);
-
-            if (includeSystemGroups && group is PlcBlockSystemGroup systemGroup)
-            {
-                foreach (PlcSystemBlockGroup child in systemGroup.SystemBlockGroups)
-                    CollectSystemBlocks(child, path + "/" + child.Name, sink);
-            }
-        }
-
-        // PlcSystemBlockGroup is not a PlcBlockGroup - it is a parallel type with its own Groups
-        // composition, so the traversal cannot be shared with CollectBlocks.
-        private static void CollectSystemBlocks(PlcSystemBlockGroup group, string path, List<BlockDto> sink)
-        {
-            foreach (PlcBlock block in group.Blocks)
-                sink.Add(Describe(block, path));
-
-            foreach (PlcSystemBlockGroup child in group.Groups)
-                CollectSystemBlocks(child, path + "/" + child.Name, sink);
-        }
-
-        private static PlcBlock FindBlock(PlcSoftware software, string blockPath)
-        {
-            var all = new List<BlockDto>();
-            CollectBlocks(software.BlockGroup, software.BlockGroup.Name, all, true);
-
-            // Accept either a bare name ("MyFB") or a full group path ("Program blocks/Grp/MyFB").
-            var wanted = blockPath.Replace('\\', '/').Trim('/');
-            var leaf = wanted.Contains("/") ? wanted.Substring(wanted.LastIndexOf('/') + 1) : wanted;
-
-            var group = ResolveGroupFor(software, wanted);
-            var block = group.Blocks.Find(leaf);
-            if (block != null) return block;
-
-            var matches = all.Where(b =>
-                string.Equals(b.Name, leaf, StringComparison.OrdinalIgnoreCase)).ToList();
-
-            if (matches.Count == 1)
-            {
-                var only = matches[0];
-                var owner = ResolveGroupFor(software, only.Path + "/" + only.Name);
-                var resolved = owner.Blocks.Find(only.Name);
-                if (resolved != null) return resolved;
-            }
-
-            if (matches.Count > 1)
-                throw new SessionException(WireErrorCodes.Ambiguous,
-                    $"Block '{leaf}' is ambiguous. Qualify it with a group path: " +
-                    string.Join(", ", matches.Select(m => m.Path + "/" + m.Name)));
-
-            throw new SessionException(WireErrorCodes.NotFound, $"Block '{blockPath}' not found.");
-        }
-
-        /// <summary>Resolves the group that should contain the leaf named by <paramref name="fullPath"/>.</summary>
-        private static PlcBlockGroup ResolveGroupFor(PlcSoftware software, string fullPath)
-        {
-            PlcBlockGroup group = software.BlockGroup;
-            var segments = fullPath.Replace('\\', '/').Trim('/')
-                .Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
-
-            // Drop the leaf, and the root group name when the caller included it.
-            var start = segments.Length > 0 &&
-                        string.Equals(segments[0], software.BlockGroup.Name, StringComparison.OrdinalIgnoreCase)
-                ? 1 : 0;
-
-            for (var i = start; i < segments.Length - 1; i++)
-            {
-                var next = group.Groups.FirstOrDefault(g =>
-                    string.Equals(g.Name, segments[i], StringComparison.OrdinalIgnoreCase));
-                if (next == null) return group;
-                group = next;
-            }
-
-            return group;
-        }
-
         private static IEnumerable<PlcTagTable> EnumerateTagTables(PlcTagTableGroup group)
         {
             foreach (PlcTagTable table in group.TagTables) yield return table;
@@ -1983,34 +1769,6 @@ namespace TiaCli.Openness
                 // Nested messages carry the actual errors; a flat read reports success wrongly.
                 FlattenMessages(message.Messages, sink);
             }
-        }
-
-        private static BlockDto Describe(PlcBlock block, string path)
-        {
-            return new BlockDto
-            {
-                Name = block.Name,
-                Path = path,
-                BlockType = BlockTypeOf(block),
-                Number = block.Number,
-                Language = block.ProgrammingLanguage.ToString(),
-                Namespace = string.IsNullOrEmpty(block.Namespace) ? null : block.Namespace,
-                IsConsistent = block.IsConsistent,
-                IsKnowHowProtected = block.IsKnowHowProtected,
-                ModifiedDate = Iso(block.ModifiedDate),
-                InstanceOfName = (block as InstanceDB)?.InstanceOfName,
-                SecondaryType = (block as OB)?.SecondaryType,
-            };
-        }
-
-        private static string BlockTypeOf(PlcBlock block)
-        {
-            if (block is OB) return "OB";
-            if (block is FB) return "FB";
-            if (block is FC) return "FC";
-            if (block is InstanceDB) return "InstanceDB";
-            if (block is GlobalDB) return "GlobalDB";
-            return block.GetType().Name;
         }
 
         private static DeviceDto Describe(Device device)

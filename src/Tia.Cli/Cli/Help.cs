@@ -74,13 +74,43 @@ HARDWARE
                                                            [--subnet <name>] names the TIA subnet
                                                            [--router <ip>] [--no-router]
 
-SOFTWARE
-  blocks <device>          List program blocks             [--filter <text>] [--system]
+PROGRAM BLOCKS
+  blocks <device>          List program blocks    [--filter <text>] [--type OB,FB,FC,DB]
+                                                  [--tree] shows the folders  [--system]
+  block show <device> <block>
+                           Header, interface and network titles of one block
+  block source <device> <block>
+                           Print the block as SCL/STL/DB text   [--out <path>] [--deps]
+                           LAD, FBD and GRAPH blocks have no text form - use 'block export'.
   block export <device> <block>
                            Export a block as Openness XML  [--out <path>] [--print]
-  scl import <device> <name>
-                           Create blocks from SCL          [--file <path> | --code <text> | stdin]
-                                                           [--no-generate]
+  block import <device> <file>
+                           Import blocks from Openness XML [--folder <path>] [--overwrite]
+  block rename <device> <block> <new name>
+                           Rename a block. Callers are not rewritten; compile to find them.
+  block delete <device> <block>
+                           Delete a block                  [--force] skips the question
+  folder add <device> <path>
+                           Create a folder, and any missing folder above it
+  folder delete <device> <path>
+                           Delete a folder and everything in it            [--force]
+
+  A block is named by a bare name (""Motor"") or by its folder path (""Pumps/Motor""). A bare
+  name that two folders both hold is refused rather than guessed at.
+
+EXTERNAL SOURCES
+  sources <device>         List external sources
+  source add <device> <name>
+                           Add SCL and compile it into blocks
+                                          [--file <path> | --code <text> | stdin]
+                                          [--no-generate] keeps the source without compiling
+                                          [--folder <path>] puts the blocks in a folder
+  source generate <device> <name>
+                           Compile a source already in the project    [--folder <path>]
+  source delete <device> <name>
+                           Delete a source. Blocks it made stay.      [--force]
+
+TAGS
   tables <device>          List tag tables
   tags <device>            List tags                       [--table <name>]
   table add <device> <name>
@@ -131,9 +161,12 @@ EXAMPLES
   tia portals                                  # what is already running
   tia devices                                  # attach to it and list stations
   tia session start --project C:\p\Line.ap20   # start a session and keep the project open
-  tia blocks PLC_1 --filter Motor
+  tia blocks PLC_1 --tree                      # the program tree, folders and all
+  tia blocks PLC_1 --type FB --filter Motor
+  tia block show PLC_1 Motor                   # interface and networks, without opening TIA
+  tia block source PLC_1 Motor > Motor.scl     # round-trips through 'tia source add'
   tia block export PLC_1 Motor --print > Motor.xml
-  type block.scl | tia scl import PLC_1 Motor
+  type block.scl | tia source add PLC_1 Motor
   tia compile PLC_1 && tia project save
   tia show hw --view network                   # put it on screen instead of clicking there
 

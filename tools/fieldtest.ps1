@@ -341,12 +341,39 @@ END_FUNCTION_BLOCK
 
     Case -Name 'table add'  -Group core -TiaArgs @('table', 'add', 'PLC_1', 'FieldTags')
     Case -Name 'tag add'    -Group core -TiaArgs @('tag', 'add', 'PLC_1', 'MotorRun', '--table', 'FieldTags', '--type', 'Bool', '--address', '%Q0.0')
-    Case -Name 'scl import' -Group core -TiaArgs @('scl', 'import', 'PLC_1', 'Motor', '--file', $scl)
-    Case -Name 'compile'    -Group core -TiaArgs @('compile', 'PLC_1')
-    Case -Name 'blocks'     -Group core -TiaArgs @('blocks', 'PLC_1')
-    Case -Name 'block export' -Group core -TiaArgs @('block', 'export', 'PLC_1', 'Motor', '--out', (Join-Path $ProjectDir 'Motor.xml'))
+    $xml = Join-Path $ProjectDir 'Motor.xml'
+
+    Case -Name 'source add'  -Group core -TiaArgs @('source', 'add', 'PLC_1', 'Motor', '--file', $scl)
+    Case -Name 'compile'     -Group core -TiaArgs @('compile', 'PLC_1')
+    Case -Name 'blocks'      -Group core -TiaArgs @('blocks', 'PLC_1')
+    Case -Name 'blocks --tree' -Group core -TiaArgs @('blocks', 'PLC_1', '--tree')
+    Case -Name 'blocks --type' -Group core -TiaArgs @('blocks', 'PLC_1', '--type', 'FB')
+    Case -Name 'sources'     -Group core -TiaArgs @('sources', 'PLC_1')
+
+    # block show reads the interface back out of an export, so it is the one that proves the
+    # SimaticML parsing still matches what this TIA version writes.
+    Case -Name 'block show'   -Group core -TiaArgs @('block', 'show', 'PLC_1', 'Motor')
+    Case -Name 'block source' -Group core -TiaArgs @('block', 'source', 'PLC_1', 'Motor', '--out', (Join-Path $ProjectDir 'Motor.out.scl'))
+    Case -Name 'block export' -Group core -TiaArgs @('block', 'export', 'PLC_1', 'Motor', '--out', $xml)
+
+    Case -Name 'block rename'      -Group core -TiaArgs @('block', 'rename', 'PLC_1', 'Motor', 'MotorRenamed')
+    Case -Name 'block rename back' -Group core -TiaArgs @('block', 'rename', 'PLC_1', 'MotorRenamed', 'Motor')
+
+    # The round trip: out of the project and back in, by both routes it offers. The block ends up
+    # back at the root under its own name, because the show and transfer cases below expect it there.
+    Case -Name 'folder add'      -Group core -TiaArgs @('folder', 'add', 'PLC_1', 'FieldFolder')
+    Case -Name 'block delete'    -Group core -TiaArgs @('block', 'delete', 'PLC_1', 'Motor', '--force')
+    Case -Name 'source generate' -Group core -TiaArgs @('source', 'generate', 'PLC_1', 'Motor', '--folder', 'FieldFolder')
+    Case -Name 'blocks in folder' -Group core -TiaArgs @('blocks', 'PLC_1', '--filter', 'Motor')
+    Case -Name 'block delete in folder' -Group core -TiaArgs @('block', 'delete', 'PLC_1', 'FieldFolder/Motor', '--force')
+    Case -Name 'folder delete'   -Group core -TiaArgs @('folder', 'delete', 'PLC_1', 'FieldFolder', '--force')
+    Case -Name 'block import'    -Group core -TiaArgs @('block', 'import', 'PLC_1', $xml)
+    Case -Name 'compile after import' -Group core -TiaArgs @('compile', 'PLC_1')
+    Case -Name 'source delete'   -Group core -TiaArgs @('source', 'delete', 'PLC_1', 'Motor', '--force')
+
     Case -Name 'devices --json' -Group core -TiaArgs @('devices', '--json')
     Case -Name 'not found exits 5' -Group core -TiaArgs @('blocks', 'NoSuchDevice') -Expect @(5)
+    Case -Name 'missing block exits 5' -Group core -TiaArgs @('block', 'show', 'PLC_1', 'NoSuchBlock') -Expect @(5)
 
     Case -Name 'project save' -Group core -TiaArgs @('project', 'save')
 

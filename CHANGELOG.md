@@ -3,6 +3,49 @@
 Notable changes to tia-cli. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.0 — 2026-09-16
+
+### Added
+
+**The program-blocks surface, which was two commands and is now the whole lifecycle.** `blocks` and
+`block export` could tell you a block existed and hand you its XML; nothing else about the program
+was reachable without opening TIA Portal.
+
+- `blocks --tree` draws the folders rather than flattening them, and `--type OB,FB,FC,DB` filters by
+  kind. `DB` covers both global and instance data blocks, since that is what people mean by it. The
+  tree's spine is ASCII: the console inherits an OEM code page unless somebody has changed it, and
+  box-drawing characters arrive there as mojibake.
+- `block show` prints a block's header, its full interface — nested struct members and all — and its
+  network titles. Openness exposes none of that directly: only `DataBlock` has an `Interface`
+  property and it yields nothing but member names, so the block is exported to a temporary file and
+  the SimaticML read back. Everything is matched by local element name, because those namespaces
+  carry a schema version that moves with each TIA release.
+- `block source` writes a block out as SCL, STL or a DB declaration — the readable form, and the one
+  that round-trips back in through `source add`. `--deps` brings the types it depends on with it.
+  LAD, FBD and GRAPH blocks have no textual form and say so rather than failing obscurely.
+- `block import` reads Openness XML back into the project, into `--folder` if you name one, over the
+  top of what is there with `--overwrite`.
+- `block rename` and `block delete`, and `folder add` / `folder delete` for the tree itself.
+  Deleting asks first unless `--force` is given, and refuses outright when stdin is redirected and
+  nobody is there to answer.
+- `sources`, `source generate` and `source delete` complete the external-source side. `source add`
+  is the new name for `scl import`, which still works, and gained `--folder` to put the blocks it
+  generates somewhere other than the root.
+
+### Changed
+
+- Block lookup was rewritten. A name that two folders both hold is now refused as ambiguous instead
+  of resolving to whichever the old path walk happened to reach, which could silently be the wrong
+  block. A folder-qualified name that is not in that folder is likewise a failure — it says where
+  the block actually is rather than acting on one somewhere else — while a bare name still finds the
+  block wherever it lives. Folder paths may be given with or without the leading `Program blocks`.
+- The `group` column in `tia blocks` is called `folder`, matching the new verbs.
+- The hints on block failures no longer overwrite a cause that is already understood. Openness
+  reports a missing licence as an ordinary `EngineeringException`, so `block source` on an
+  unlicensed machine used to answer "only textual blocks have a source form" about a perfectly
+  textual block; the licence, security and dead-portal cases now pass through to the error that
+  names them, and keep their exit codes.
+
 ## 0.1.0 — 2026-09-01
 
 First release. Drives Siemens TIA Portal through the Openness API from a terminal or a script.

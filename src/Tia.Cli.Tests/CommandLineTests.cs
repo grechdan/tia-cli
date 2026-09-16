@@ -127,6 +127,48 @@ namespace TiaCli.Tests
             var line = CommandLine.Parse(new[] { "blocks" });
             Assert.Null(line.PositionalOrNull(0));
         }
+
+        [Fact]
+        public void SourceIsAGroupButSourcesIsAVerb()
+        {
+            Assert.Equal("source add", CommandLine.Parse(new[] { "source", "add", "PLC_1", "Motor" }).Verb);
+
+            var list = CommandLine.Parse(new[] { "sources", "PLC_1" });
+            Assert.Equal("sources", list.Verb);
+            Assert.Equal(new[] { "PLC_1" }, list.Positionals);
+        }
+
+        [Fact]
+        public void FolderIsBothAGroupVerbAndAValueFlag()
+        {
+            var create = CommandLine.Parse(new[] { "folder", "add", "PLC_1", "Pumps/Small" });
+            Assert.Equal("folder add", create.Verb);
+            Assert.Equal(new[] { "PLC_1", "Pumps/Small" }, create.Positionals);
+
+            var import = CommandLine.Parse(new[]
+                { "block", "import", "PLC_1", "Motor.xml", "--folder", "Pumps", "--overwrite" });
+            Assert.Equal("block import", import.Verb);
+            Assert.Equal("Pumps", import.Value("folder"));
+            Assert.True(import.Has("overwrite"));
+        }
+
+        [Fact]
+        public void BlockRenameKeepsThreePositionals()
+        {
+            var line = CommandLine.Parse(new[] { "block", "rename", "PLC_1", "Pumps/FC1", "FC_Pump" });
+            Assert.Equal("block rename", line.Verb);
+            Assert.Equal("PLC_1", line.Positional(0, "device"));
+            Assert.Equal("Pumps/FC1", line.Positional(1, "block"));
+            Assert.Equal("FC_Pump", line.Positional(2, "new name"));
+        }
+
+        [Fact]
+        public void BlockTypeFilterTakesAValue()
+        {
+            var line = CommandLine.Parse(new[] { "blocks", "PLC_1", "--type", "FB,FC", "--tree" });
+            Assert.Equal("FB,FC", line.Value("type"));
+            Assert.True(line.Has("tree"));
+        }
     }
 
     public class TokenizeTests
