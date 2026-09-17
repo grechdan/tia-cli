@@ -587,7 +587,7 @@ namespace TiaCli.Openness
 
         // ---------------------------------------------------------------- plumbing
 
-        private static bool Matches(BlockDto block, string nameFilter, string typeFilter)
+        internal static bool Matches(BlockDto block, string nameFilter, string typeFilter)
         {
             if (!string.IsNullOrEmpty(nameFilter) &&
                 block.Name.IndexOf(nameFilter, StringComparison.OrdinalIgnoreCase) < 0)
@@ -670,7 +670,7 @@ namespace TiaCli.Openness
         }
 
         /// <summary>A folder that nothing matched in is not part of the answer to a filtered ask.</summary>
-        private static BlockTreeNodeDto Prune(BlockTreeNodeDto node, string nameFilter, string typeFilter)
+        internal static BlockTreeNodeDto Prune(BlockTreeNodeDto node, string nameFilter, string typeFilter)
         {
             var filtering = !string.IsNullOrEmpty(nameFilter) || !string.IsNullOrEmpty(typeFilter);
             return filtering && node.Children.Count == 0 ? null : node;
@@ -728,7 +728,7 @@ namespace TiaCli.Openness
         }
 
         /// <summary>Path segments below the root folder, with a leading root name dropped.</summary>
-        private static List<string> Segments(string path, string rootName)
+        internal static List<string> Segments(string path, string rootName)
         {
             if (string.IsNullOrWhiteSpace(path)) return new List<string>();
 
@@ -744,7 +744,7 @@ namespace TiaCli.Openness
             return parts;
         }
 
-        private static string Normalize(string path, string rootName) =>
+        internal static string Normalize(string path, string rootName) =>
             string.Join("/", Segments(path, rootName));
 
         private static string SourceExtension(PlcBlock block)
@@ -761,10 +761,10 @@ namespace TiaCli.Openness
             }
         }
 
-        private static string WithSourceExtension(string name) =>
+        internal static string WithSourceExtension(string name) =>
             Path.GetExtension(name).Length > 0 ? name : name + ".scl";
 
-        private static string NullIfEmpty(string value) =>
+        internal static string NullIfEmpty(string value) =>
             string.IsNullOrWhiteSpace(value) ? null : value;
 
         /// <summary>
