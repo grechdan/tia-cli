@@ -174,7 +174,7 @@ tia devices --no-daemon
 A session runs its portal in the background, and a headless one has no user interface at all — so
 that window has nowhere to appear, nobody answers it, and the call eventually gives up as
 `access_denied` (exit 7) with the misleading text "Security error. The operation has timed out."
-`install.ps1` prints this instruction when the file it just installed is not yet approved.
+`install.ps1` prints this instruction when the file it just installed is not yet approved. With more than one portal open `tia` cannot tell which you mean, so add `--attach <pid>` from `tia portals`, or `--start` to approve against a throwaway portal of its own.
 
 An administrator can pre-empt the dialog instead by writing the whitelist entry directly, which is
 what `repair.ps1` does. TIA Portal still has the final say.
@@ -217,6 +217,9 @@ Run `tia help` for the full text.
 | `tia catalog <filter>` | Search the hardware catalog for order numbers |
 | `tia device add <type> <name>` | Add a station from a type identifier |
 | `tia device ip <device>` | `--address <ip> --mask <netmask>`, `--subnet <name>` for the TIA subnet, gateway with `--router <ip>` / `--no-router` |
+| `tia device attrs <device>` | List the Openness attributes of the CPU (`--filter <text>`) |
+| `tia device set <device> <attribute> <value>` | Change one of them |
+| `tia device protection <device>` | Access level and passwords (`--level`, `--password`, `--secret`). A current CPU will not compile until the last two are set |
 | `tia blocks <device>` | List blocks (`--filter`, `--type OB,FB,FC,DB`, `--tree`, `--system`) |
 | `tia block show <device> <block>` | Header, interface and network titles |
 | `tia block source <device> <block>` | The block as SCL/STL/DB text (`--out <path>`, `--deps`) |
@@ -232,16 +235,17 @@ Run `tia help` for the full text.
 | `tia tables <device>` / `tia tags <device>` | Tag tables and tags (`--table`) |
 | `tia table add` / `tia tag add` | Create them (`--type`, `--address`) |
 | `tia compile <device>` | Compile. Exits non-zero when it reports errors. |
-| `tia download <device>` | Download to the PLC (`--address`, `--via`, `--interface`, `--slot`, `--hardware`, `--changes`, `--stopped`, `--force`) |
+| `tia download <device>` | Download to the PLC (`--address`, `--via`, `--interface`, `--target`, `--slot`, `--hardware`, `--changes`, `--stopped`, `--force`, `--secret`, `--plc-password`) |
 | `tia upload <ip>` | Upload the station at that address into the project as a new station |
-| `tia sim start <device>` | Download to S7-PLCSIM, which starts the simulator (`--advanced` for PLCSIM Advanced) |
+| `tia sim create <device>` | **In development.** Creates a PLCSIM instance and powers it on (`--cpu`, `--address`, `--mask`, `--timeout`). S7-1500 and up only, and TIA will not download to the instance it makes — see below |
+| `tia sim start <device>` | **In development, and does not currently work as expected.** Meant to be the download to S7-PLCSIM (`--advanced` for PLCSIM Advanced). Start the simulation from TIA and use `tia download <device> --interface PLCSIM` instead |
 | `tia show hw` | Open the hardware editor (`--view device\|network\|topology`) |
 | `tia show device <device>` | Open one station in it (`--view ...`) |
 | `tia show block <device> <block>` | Open a block's editor |
 | `tia show table <device> <table>` | Open a tag table |
 
 Global: `--json`, `--attach <pid>`, `--start`, `--headless`, `--new`, `--no-daemon`,
-`--openness-version <v>`, `--quiet`.
+`--openness-version <v>`, `--quiet`, `--version`, `-h` / `--help`.
 
 ### Scripting
 
@@ -310,7 +314,7 @@ tia compile PLC_1 || echo "compile failed"
   boots the simulator. From V18 that mode is gone: a simulated PLC is an ordinary PN/IE target behind
   the *Siemens PLCSIM Virtual Ethernet Adapter*, at its own IP address, so `sim start` uses that adapter
   instead — and the PLCSIM instance must already be running at the device's IP, because TIA will not
-  start one for a download. PLCSIM Advanced instances take `--advanced` for the software-target prompt.
+  start one for a download. PLCSIM Advanced instances take `--advanced` for the software-target prompt. `tia sim create` is meant to remove that manual step and is **still in development**: PLCSIM exposes a Runtime API that builds instances, but only *Advanced* ones, which this TIA refuses as a download target and which need the PLCSIM Advanced licence. What works today is starting the simulation in TIA and running `tia download <device> --interface PLCSIM`.
 - **Never throw from inside a download callback.** TIA treats an exception in its own callback as
   fatal: it surfaces as a `NonRecoverableException`, the portal is gone, and whatever the exception
   said is lost. Prompts `tia` will not answer are declined inside the callback and reported by name
