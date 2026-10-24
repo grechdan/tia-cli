@@ -346,9 +346,9 @@ Run `tia help` for the full text.
 | `tia tags <station>` | Tags as CSV, never JSON. `--table <t>` prints that table's own file |
 | `tia table add <station> <name>` | Create a tag table |
 | `tia tag add <station> <name>` | Create a tag (`--table <t>`, default the default table; `--type <dt>`, `--address <addr>`) |
-| `tia table export <station> <table>` | One tag table as CSV (`--out <file>`) |
-| `tia tables export [<station>]` / `tables import` | Every tag table, out (`--out <dir>`) or in (`--from <dir>`). Default `<station>/PLC tags/` |
-| `tia table import <station> <file.csv>` | The table holds exactly the file's tags afterwards (`--name`, `--folder`) |
+| `tia table export <station> <table>` | One tag table as CSV (`--out <file>`), or with `--xml` as TIA's own XML, user constants and every comment language included |
+| `tia tables export [<station>]` / `tables import` | Every tag table, out (`--out <dir>`, `--xml`) or in (`--from <dir>`, `.csv` and `.xml`). Default `<station>/PLC tags/` |
+| `tia table import <station> <file.csv>` | The table holds exactly the file's tags afterwards (`--name`, `--folder`). A `.xml` replaces the table it names, constants included |
 | `tia types <station>` | PLC data types (UDTs) |
 | `tia type export <station> <type>` | One data type as `.udt` (`--out <file>`) |
 | `tia types export [<station>]` / `types import` | Every data type, out (`--out <dir>`) or in (`--from <dir>`). Default `<station>/PLC data types/` |
@@ -379,7 +379,7 @@ The longer road does a part on its own; the shorter one does the whole job.
 | One or all | Singular for one - `block export Motor` - plural for all - `blocks export`. The older `--all` (`block export --all`, `block source --all`, ...) still works |
 | Text into the project | `source add` (keeps the external source) · `sync --file` (removes it) · `type import` (`.udt`) |
 | An XML block in | `block import` · `sync --file <file.xml>` |
-| A tag table in | `table import` · `sync --file <file.csv>` |
+| A tag table in | `table import` · `sync --file <file.csv>` (or `.xml`) |
 | One tag table out | `tags --table <t> > t.csv` = `table export <t>` |
 | One tag | `tag add` · a row in the table's CSV, then `table import` or `sync` |
 | Delete a block | `block delete` · delete its file, then `sync` |

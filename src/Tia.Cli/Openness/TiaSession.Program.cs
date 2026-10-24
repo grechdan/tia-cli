@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Xml;
+using System.Xml.Linq;
 using Siemens.Engineering;
 using Siemens.Engineering.SW;
 using Siemens.Engineering.SW.Blocks;
@@ -19,12 +21,14 @@ namespace TiaCli.Openness
     ///
     ///   Program blocks/   SCL, STL and DB blocks as text; LAD, FBD and GRAPH as Openness XML
     ///   PLC data types/   one .udt per type, the text TIA generates and compiles back
-    ///   PLC tags/         one .csv per tag table (see TagCsv)
+    ///   PLC tags/         one .csv per tag table (see TagCsv); TIA's own .xml is taken too
     /// </summary>
     internal sealed partial class TiaSession
     {
         private const string TypeExtension = ".udt";
         private const string TagTableExtension = ".csv";
+        /// <summary>A tag table as TIA exports it, constants and every language included (see TagTableXml).</summary>
+        private const string TagTableXmlExtension = ".xml";
 
         // ---------------------------------------------------------------- export
 
@@ -58,7 +62,7 @@ namespace TiaCli.Openness
 
             WriteBlocks(software, Path.Combine(result.Directory, blocks), true, null, null, blocks + "/", result);
             WriteTypes(software, software.TypeGroup, Path.Combine(result.Directory, types), types, result);
-            WriteTagTables(software.TagTableGroup, Path.Combine(result.Directory, tags), tags, result);
+            WriteTagTables(software.TagTableGroup, Path.Combine(result.Directory, tags), tags, TagTableExtension, result);
             return result;
         }
 
@@ -95,20 +99,36 @@ namespace TiaCli.Openness
                 WriteTypes(software, child, Path.Combine(directory, SafeFileName(child.Name)), label + "/" + child.Name, result);
         }
 
-        private void WriteTagTables(PlcTagTableGroup group, string directory, string label, BlockExportAllDto result)
+        private void WriteTagTables(PlcTagTableGroup group, string directory, string label, string extension,
+            BlockExportAllDto result)
         {
             foreach (PlcTagTable table in group.TagTables)
-                WriteTagTable(table, Path.Combine(directory, SafeFileName(table.Name) + TagTableExtension),
+                WriteTagTable(table, Path.Combine(directory, SafeFileName(table.Name) + extension),
                     label + "/" + table.Name, result);
 
             foreach (PlcTagTableUserGroup child in group.Groups)
-                WriteTagTables(child, Path.Combine(directory, SafeFileName(child.Name)), label + "/" + child.Name, result);
+                WriteTagTables(child, Path.Combine(directory, SafeFileName(child.Name)), label + "/" + child.Name,
+                    extension, result);
         }
 
+        /// <summary>One tag table, as CSV or - when <paramref name="path"/> ends in .xml - as TIA's XML.</summary>
         private void WriteTagTable(PlcTagTable table, string path, string reference, BlockExportAllDto result)
         {
             try
             {
+                if (string.Equals(Path.GetExtension(path), TagTableXmlExtension, StringComparison.OrdinalIgnoreCase))
+                {
+                    // TIA's own file holds the constants too, so nothing is left out to report. With
+                    // defaults, as tag tables kept in repositories are: without, every attribute at
+                    // its default - the HMI flags of nearly every tag - is left out of the file.
+                    var xml = Fresh(path);
+                    table.Export(xml, ExportOptions.WithDefaults);
+                    DropCreatedStamp(xml);
+                    xml.Refresh();
+                    result.Exported.Add(new ExportResultDto { Name = reference, FilePath = xml.FullName, Bytes = xml.Length });
+                    return;
+                }
+
                 var rows = table.Tags.Cast<PlcTag>().Select(tag => new TagRow
                 {
                     Name = tag.Name,
@@ -218,7 +238,7 @@ namespace TiaCli.Openness
         {
             { Part.Blocks, new[] { ".scl", ".awl", ".db", ".xml" } },
             { Part.Types, new[] { TypeExtension } },
-            { Part.Tags, new[] { TagTableExtension } },
+            { Part.Tags, new[] { TagTableExtension, TagTableXmlExtension } },
         };
 
         /// <summary>
@@ -417,10 +437,16 @@ namespace TiaCli.Openness
         /// </summary>
         private static void ApplyTagTable(PlcSoftware software, ProgramFile file, Language language)
         {
-            if (file.Extension != TagTableExtension)
-                throw new SessionException(WireErrorCodes.InvalidRequest, "A tag table is a .csv file.");
+            if (file.Extension != TagTableExtension && file.Extension != TagTableXmlExtension)
+                throw new SessionException(WireErrorCodes.InvalidRequest,
+                    "A tag table is a .csv file, or the .xml TIA Portal exports.");
             if (!File.Exists(file.FullPath))
                 throw new SessionException(WireErrorCodes.NotFound, $"Not found: {file.FullPath}");
+            if (file.Extension == TagTableXmlExtension)
+            {
+                ImportTagTableXml(software, file);
+                return;
+            }
 
             List<TagRow> rows;
             try
@@ -459,6 +485,45 @@ namespace TiaCli.Openness
             }
         }
 
+        /// <summary>
+        /// A tag table from TIA's own XML, replacing the table of the same name: its tags and user
+        /// constants become the file's, and so do the comments in every language. The name is the
+        /// one in the file. A table TIA already has is replaced in the folder it is in, wherever the
+        /// file sits - names are unique across the folders, so one elsewhere would be refused.
+        /// </summary>
+        private static void ImportTagTableXml(PlcSoftware software, ProgramFile file)
+        {
+            string name;
+            try
+            {
+                name = TagTableXml.NameOf(XDocument.Load(file.FullPath));
+            }
+            catch (XmlException error)
+            {
+                throw new SessionException(WireErrorCodes.InvalidRequest,
+                    $"{Path.GetFileName(file.FullPath)} is not XML: {error.Message}");
+            }
+            if (name == null)
+                throw new SessionException(WireErrorCodes.InvalidRequest,
+                    $"{Path.GetFileName(file.FullPath)} holds no tag table: no {TagTableXml.TableElement} with a name.",
+                    "'tia table export <station> <table> --xml' writes one.");
+
+            var folder = FolderHolding(software.TagTableGroup, name) ?? TagFolder(software, file, create: true);
+            folder.TagTables.Import(new FileInfo(file.FullPath), ImportOptions.Override);
+        }
+
+        /// <summary>The folder the tag table <paramref name="name"/> is in, or null when there is none.</summary>
+        private static PlcTagTableGroup FolderHolding(PlcTagTableGroup group, string name)
+        {
+            if (group.TagTables.Find(name) != null) return group;
+            foreach (PlcTagTableUserGroup child in group.Groups)
+            {
+                var found = FolderHolding(child, name);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
         private static void DeleteTagTable(PlcSoftware software, ProgramFile file)
         {
             var table = TagFolder(software, file, create: false).TagTables.Find(file.Name)
@@ -473,16 +538,18 @@ namespace TiaCli.Openness
         // ---------------------------------------------------------------- one part on its own
 
         /// <summary>
-        /// Every tag table of the station as CSV under <paramref name="directory"/>, in its folders.
-        /// Nothing there is deleted first; that is 'tia export', which owns its folder.
+        /// Every tag table of the station under <paramref name="directory"/>, in its folders: as CSV,
+        /// or with <paramref name="xml"/> as TIA's own XML. Nothing there is deleted first; that is
+        /// 'tia export', which owns its folder.
         /// </summary>
-        public BlockExportAllDto ExportTagTables(string deviceName, string directory, bool underRoot)
+        public BlockExportAllDto ExportTagTables(string deviceName, string directory, bool underRoot, bool xml)
         {
             var software = RequirePlcSoftware(deviceName);
             var result = NewExport(underRoot
                 ? Path.Combine(directory, SafeFileName(software.TagTableGroup.Name))
                 : directory);
-            WriteTagTables(software.TagTableGroup, result.Directory, SafeFileName(software.TagTableGroup.Name), result);
+            WriteTagTables(software.TagTableGroup, result.Directory, SafeFileName(software.TagTableGroup.Name),
+                xml ? TagTableXmlExtension : TagTableExtension, result);
             return result;
         }
 
@@ -505,12 +572,16 @@ namespace TiaCli.Openness
         /// <summary>
         /// A tag table from its CSV: made to hold exactly the tags the file lists, created when it
         /// is not there yet. The table is named after the file unless <paramref name="tableName"/>
-        /// says otherwise.
+        /// says otherwise. From TIA's XML instead, the table the file names is replaced by it.
         /// </summary>
         public SyncedFileDto ImportTagTable(string deviceName, string filePath, string tableName, string folderPath)
         {
             var software = RequirePlcSoftware(deviceName);
             var file = Standalone(filePath, tableName, folderPath);
+            if (file.Extension == TagTableXmlExtension && !string.IsNullOrWhiteSpace(tableName))
+                throw new SessionException(WireErrorCodes.InvalidRequest,
+                    "An XML tag table names itself; --name does not apply to it.",
+                    "Change the <Name> in the file to import it under another name.");
             ApplyTagTable(software, file, EditingLanguage());
             return new SyncedFileDto { File = file.FullPath, Action = "imported" };
         }

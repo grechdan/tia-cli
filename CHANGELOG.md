@@ -3,6 +3,23 @@
 Notable changes to tia-cli. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+**Tag tables as TIA's own XML.** The CSV carries tags in one language; the Openness XML TIA Portal
+exports carries the user constants and the comments in every language too, and is what
+repositories that keep tag tables next to their SCL already hold.
+
+- `table export --xml` and `tables export --xml` write tag tables as XML; an `--out` ending `.xml`
+  does the same for one table. The export is made with defaults (`ExportSetting` `WithDefaults`),
+  so attributes at their default value, such as the HMI flags, are in the file too. Its creation
+  stamp is dropped, as it is for blocks, so an unchanged table exports to the same bytes.
+- `table import`, `tables import` and `tia sync` take `.xml` tag tables as well as `.csv`. The XML
+  replaces the table it names - tags, constants and comments - in the folder TIA has it in, or in
+  `--folder` (or the file's folder) when the table is new. `--name` does not apply: the name is in
+  the file.
+
 ## 0.4.2 — 2026-10-21
 
 ### Added

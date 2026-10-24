@@ -415,6 +415,11 @@ END_FUNCTION_BLOCK
     Case -Name 'table import' -Group core -TiaArgs @('table', 'import', 'PLC_1', $tagCsv)
     Case -Name 'tables export' -Group core -TiaArgs @('tables', 'export', 'PLC_1', '--out', (Join-Path $ProjectDir 'all-tags'))
     Case -Name 'tables import' -Group core -TiaArgs @('tables', 'import', 'PLC_1', '--from', (Join-Path $ProjectDir 'all-tags'))
+    $tagXml = Join-Path $ProjectDir 'FieldTags.xml'
+    Case -Name 'table export --xml' -Group core -TiaArgs @('table', 'export', 'PLC_1', 'FieldTags', '--xml', '--out', $tagXml)
+    Case -Name 'table import .xml' -Group core -TiaArgs @('table', 'import', 'PLC_1', $tagXml)
+    Case -Name 'tables export --xml' -Group core -TiaArgs @('tables', 'export', 'PLC_1', '--xml', '--out', (Join-Path $ProjectDir 'all-tags-xml'))
+    Case -Name 'tables import .xml' -Group core -TiaArgs @('tables', 'import', 'PLC_1', '--from', (Join-Path $ProjectDir 'all-tags-xml'))
     $xml = Join-Path $ProjectDir 'Motor.xml'
 
     $function = @'

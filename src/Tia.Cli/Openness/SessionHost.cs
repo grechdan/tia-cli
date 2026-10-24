@@ -229,7 +229,8 @@ namespace TiaCli.Openness
                 case "tag.exportTable": return _session.ExportTagTable(
                     p.RequiredString("device"), p.RequiredString("table"), p.RequiredString("targetPath"));
                 case "tag.exportTables": return _session.ExportTagTables(
-                    p.RequiredString("device"), p.RequiredString("directory"), p.Bool("underRoot", false));
+                    p.RequiredString("device"), p.RequiredString("directory"), p.Bool("underRoot", false),
+                    p.Bool("xml", false));
                 case "tag.importTable": return _session.ImportTagTable(
                     p.RequiredString("device"), p.RequiredString("filePath"), p.String("name"), p.String("folder"));
 

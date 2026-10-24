@@ -146,24 +146,44 @@ namespace TiaCli.Cli
             return failed > 0 ? 1 : 0;
         }
 
-        /// <summary>'tables export': every tag table. 'table export --all' is the older spelling.</summary>
+        /// <summary>
+        /// 'tables export': every tag table, as CSV or with --xml as TIA's own XML. 'table export
+        /// --all' is the older spelling.
+        /// </summary>
         public static int TablesExport(CommandLine cmd, IExecutor executor, Output output)
         {
             var device = cmd.Positional(0, "station");
             NoName(cmd, "tag table", "tables export");
             var directory = AllDirectory(cmd, device, out var underRoot);
-            return PrintAll(Commands.Call(executor, "tag.exportTables", new { device, directory, underRoot }),
+            var xml = cmd.Has("xml");
+            return PrintAll(Commands.Call(executor, "tag.exportTables", new { device, directory, underRoot, xml }),
                 "tag table(s)", output);
         }
 
+        /// <summary>One tag table; the file's extension says which form, and --xml makes it .xml.</summary>
         public static int TableExport(CommandLine cmd, IExecutor executor, Output output)
         {
             if (cmd.Has("all")) return TablesExport(cmd, executor, output);
 
             var device = cmd.Positional(0, "station");
             var table = cmd.Positional(1, "table");
-            var target = Path.GetFullPath(cmd.Value("out") ?? table + ".csv");
+            var target = Path.GetFullPath(TableFile(table, cmd.Value("out"), cmd.Has("xml")));
             return PrintOne(Commands.Call(executor, "tag.exportTable", new { device, table, targetPath = target }), output);
+        }
+
+        /// <summary>
+        /// Where 'table export' writes: --out, else the table's name with .csv, or .xml with --xml.
+        /// The session picks the form from the extension, so --xml and an --out of another kind
+        /// contradict each other.
+        /// </summary>
+        internal static string TableFile(string table, string outPath, bool xml)
+        {
+            if (outPath == null) return table + (xml ? ".xml" : ".csv");
+            if (xml && !string.Equals(Path.GetExtension(outPath), ".xml", StringComparison.OrdinalIgnoreCase))
+                throw new WireException(WireErrorCodes.InvalidRequest,
+                    $"--xml writes TIA's XML, and {Path.GetFileName(outPath)} is not an .xml file.",
+                    "Name the file .xml, or drop --xml for CSV.");
+            return outPath;
         }
 
         public static int TableImport(CommandLine cmd, IExecutor executor, Output output)
@@ -177,8 +197,16 @@ namespace TiaCli.Cli
             });
             if (output.AsJson) { output.Json(result); return 0; }
 
-            var name = cmd.Value("name") ?? Path.GetFileNameWithoutExtension(cmd.Positional(1, "file"));
-            output.Line($"Tag table {name} now holds the tags in {Path.GetFileName(cmd.Positional(1, "file"))}.");
+            var file = Path.GetFileName(cmd.Positional(1, "file"));
+            if (string.Equals(Path.GetExtension(file), ".xml", StringComparison.OrdinalIgnoreCase))
+            {
+                output.Line($"The tag table in {file} replaced the one of its name.");
+                output.Detail("Its tags, user constants and comments are now the file's.");
+                return 0;
+            }
+
+            var name = cmd.Value("name") ?? Path.GetFileNameWithoutExtension(file);
+            output.Line($"Tag table {name} now holds the tags in {file}.");
             output.Detail("Tags the file does not list were deleted; user constants were left as they are.");
             return 0;
         }
