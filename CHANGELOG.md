@@ -9,7 +9,9 @@ and versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 - `tia blocks --json` gives each block's `autoNumber`, as `tia block show` does: whether TIA picks
   the number and may change it. A tool that reads DBs by number learns which numbers to trust for
-  a whole PLC in one call, instead of one `block show` (and its XML export) per block.
+  a whole PLC in one call, instead of one `block show` (and its XML export) per block. The other
+  `--json` outputs that list blocks (`blocks --tree`, `block rename`, `block delete`, the blocks an
+  import made) carry it too.
 
 ## 0.4.7 — 2026-10-26
 

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Text.Json;
 using TiaCli.Protocol;
 using Xunit;
@@ -73,6 +74,20 @@ namespace TiaCli.Tests
             Assert.Equal("m", back.Message);
             Assert.Equal("d", back.Detail);
             Assert.Equal("h", back.Hint);
+        }
+
+        [Fact]
+        public void BlockListAndBlockShowBothCarryAutoNumber()
+        {
+            // A tool reading DBs by number takes autoNumber from 'blocks' or 'block show' alike, and
+            // false (a fixed number) must be printed, not dropped as a default.
+            var listed = JsonSerializer.Serialize(new BlockDto { AutoNumber = false }, WireJson.Options);
+            var shown = JsonSerializer.Serialize(new BlockDetailDto { AutoNumber = false }, WireJson.Options);
+            Assert.Contains("\"autoNumber\":false", listed);
+            Assert.Contains("\"autoNumber\":false", shown);
+
+            var back = JsonUtil.To<List<BlockDto>>(JsonUtil.ToElement(new[] { new { autoNumber = true } }));
+            Assert.True(back[0].AutoNumber);
         }
 
         [Fact]

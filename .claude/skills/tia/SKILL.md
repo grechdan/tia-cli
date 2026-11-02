@@ -91,6 +91,7 @@ user wants the changes.
 tia devices --json                        # stations, CPUs, addresses — the <dev> argument is the station name
 tia blocks <dev> --tree                   # the program tree with folders
 tia blocks <dev> --type FB,FC --filter Motor --json    # --system includes system blocks
+tia blocks <dev> --type DB --json         # autoNumber true: TIA picks the DB number and may change it
 tia block show <dev> <block> --json       # header, full interface, network titles
 tia block source <dev> <block>            # the code as SCL / STL / DB text; --deps adds the UDTs it uses
 tia block export <dev> <block> --print    # Openness XML — the only form for LAD, FBD and GRAPH

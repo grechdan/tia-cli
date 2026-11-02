@@ -505,6 +505,8 @@ END_FUNCTION
     Case -Name 'blocks --tree' -Group core -TiaArgs @('blocks', 'PLC_1', '--tree')
     Case -Name 'blocks --type' -Group core -TiaArgs @('blocks', 'PLC_1', '--type', 'FB')
     Case -Name 'blocks --system' -Group core -TiaArgs @('blocks', 'PLC_1', '--system')
+    # Reads autoNumber off every block, system blocks included, where block show reads it off one.
+    Case -Name 'blocks --system --json' -Group core -TiaArgs @('blocks', 'PLC_1', '--system', '--json')
     Case -Name 'sources'     -Group core -TiaArgs @('sources', 'PLC_1')
 
     # block show reads the interface back out of an export, so it is the one that proves the
