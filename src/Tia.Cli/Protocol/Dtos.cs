@@ -148,6 +148,7 @@ namespace TiaCli.Protocol
         public string Path { get; set; }
         public string BlockType { get; set; }
         public int Number { get; set; }
+        public bool AutoNumber { get; set; }
         public string Language { get; set; }
         public string Namespace { get; set; }
         public bool IsConsistent { get; set; }

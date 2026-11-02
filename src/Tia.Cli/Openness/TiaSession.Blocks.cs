@@ -848,6 +848,7 @@ namespace TiaCli.Openness
                 Path = path,
                 BlockType = BlockTypeOf(block),
                 Number = block.Number,
+                AutoNumber = block.AutoNumber,
                 Language = block.ProgrammingLanguage.ToString(),
                 Namespace = string.IsNullOrEmpty(block.Namespace) ? null : block.Namespace,
                 IsConsistent = block.IsConsistent,

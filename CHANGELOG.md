@@ -3,6 +3,16 @@
 Notable changes to tia-cli. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- `tia blocks --json` gives each block's `autoNumber`, as `tia block show` does: whether TIA picks
+  the number and may change it. A tool that reads DBs by number learns which numbers to trust for
+  a whole PLC in one call, instead of one `block show` (and its XML export) per block. The other
+  `--json` outputs that list blocks (`blocks --tree`, `block rename`, `block delete`, the blocks an
+  import made) carry it too.
+
 ## 0.4.7 — 2026-10-26
 
 Everything since 0.4.2. Versions 0.4.3 to 0.4.6 were test builds for the work machine and were
